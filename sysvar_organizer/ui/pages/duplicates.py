@@ -324,8 +324,8 @@ class DuplicatesPage(QWidget):
             QMessageBox.information(
                 self,
                 APP_NAME,
-                "Há uma análise de armazenamento em andamento. Aguarde a conclusão "
-                "para buscar duplicados.",
+                "Há outra tarefa em andamento (análise de armazenamento ou comparação "
+                "de pastas). Aguarde a conclusão para buscar duplicados.",
             )
             return
 

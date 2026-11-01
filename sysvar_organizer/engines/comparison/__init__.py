@@ -1,6 +1,7 @@
-"""Motor de comparação.
+"""Motor de comparação (somente leitura; nenhum arquivo é alterado, copiado,
+movido ou excluído).
 
-* ``duplicates``: identificação de duplicados exatos por SHA-256 (somente
-  leitura; nenhum arquivo é alterado, movido ou excluído).
-* Comparação de pastas: reservada. Nenhuma funcionalidade implementada.
+* ``hashing``: revalidação de arquivos indexados e SHA-256 com reaproveitamento.
+* ``duplicates``: identificação de duplicados exatos por SHA-256.
+* ``folders``: comparação informativa entre duas pastas indexadas.
 """

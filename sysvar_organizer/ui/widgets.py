@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, Signal
 from PySide6.QtGui import QResizeEvent
 from PySide6.QtWidgets import (
+    QAbstractItemView,
     QFrame,
     QGridLayout,
     QHBoxLayout,
+    QHeaderView,
     QLabel,
+    QPushButton,
     QScrollArea,
     QSizePolicy,
+    QTableWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -136,3 +140,67 @@ def page_layout(page: QWidget) -> QVBoxLayout:
     layout.setContentsMargins(32, 28, 32, 28)
     layout.setSpacing(20)
     return layout
+
+
+def result_table(headers: list[str], stretch_columns: tuple[int, ...]) -> QTableWidget:
+    """Tabela somente leitura, uma linha por registro, seleção de linha única."""
+    table = QTableWidget(0, len(headers))
+    table.setObjectName("ResultTable")
+    table.setHorizontalHeaderLabels(headers)
+    table.verticalHeader().setVisible(False)
+    table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+    table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+    table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+    table.setAlternatingRowColors(True)
+    table.setWordWrap(False)
+    table.setTextElideMode(Qt.TextElideMode.ElideMiddle)
+    header = table.horizontalHeader()
+    for column in range(len(headers)):
+        mode = (
+            QHeaderView.ResizeMode.Stretch
+            if column in stretch_columns
+            else QHeaderView.ResizeMode.ResizeToContents
+        )
+        header.setSectionResizeMode(column, mode)
+    return table
+
+
+class Pager(QWidget):
+    """Navegação entre páginas de uma consulta paginada."""
+
+    page_changed = Signal(int)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.page = 0
+        self._pages = 1
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        self._info = label("", "MetricHint")
+        self._previous = QPushButton("Anterior")
+        self._next = QPushButton("Próxima")
+        self._previous.clicked.connect(lambda: self._go(self.page - 1))
+        self._next.clicked.connect(lambda: self._go(self.page + 1))
+        row.addWidget(self._info)
+        row.addStretch(1)
+        row.addWidget(self._previous)
+        row.addWidget(self._next)
+        self.set_total(0, 1)
+
+    def set_total(self, total: int, page_size: int, page: int = 0) -> None:
+        self._pages = max(1, -(-total // page_size))
+        self.page = min(max(page, 0), self._pages - 1)
+        start = self.page * page_size + 1 if total else 0
+        end = min(total, (self.page + 1) * page_size)
+        self._info.setText(
+            f"{start:,}–{end:,} de {total:,}  ·  página {self.page + 1} de {self._pages}".replace(
+                ",", "."
+            )
+        )
+        self._previous.setEnabled(self.page > 0)
+        self._next.setEnabled(self.page < self._pages - 1)
+
+    def _go(self, page: int) -> None:
+        if 0 <= page < self._pages and page != self.page:
+            self.page = page
+            self.page_changed.emit(page)

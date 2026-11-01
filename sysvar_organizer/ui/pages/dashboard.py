@@ -60,6 +60,11 @@ class DashboardPage(QWidget):
         self._groups_card = MetricCard("GRUPOS DE DUPLICADOS")
         self._excess_card = MetricCard("CÓPIAS EXCEDENTES")
         self._recoverable_card = MetricCard("ESPAÇO POTENCIALMENTE RECUPERÁVEL")
+        self._comparison_card = MetricCard("ÚLTIMA COMPARAÇÃO DE PASTAS")
+        self._cmp_identical_card = MetricCard("IDÊNTICOS (COMPARAÇÃO)")
+        self._cmp_different_card = MetricCard("DIFERENTES (COMPARAÇÃO)")
+        self._cmp_exclusive_card = MetricCard("EXCLUSIVOS (COMPARAÇÃO)")
+        self._cmp_shared_card = MetricCard("VOLUME LÓGICO COMPARTILHADO")
 
         # Grade de 6 colunas: 3 cartões na primeira linha, 2 na segunda
         # (armazenamento) e 3 na terceira (duplicados exatos).
@@ -74,6 +79,11 @@ class DashboardPage(QWidget):
         grid.addWidget(self._groups_card, 2, 0, 1, 2)
         grid.addWidget(self._excess_card, 2, 2, 1, 2)
         grid.addWidget(self._recoverable_card, 2, 4, 1, 2)
+        grid.addWidget(self._comparison_card, 3, 0, 1, 2)
+        grid.addWidget(self._cmp_identical_card, 3, 2, 1, 2)
+        grid.addWidget(self._cmp_different_card, 3, 4, 1, 2)
+        grid.addWidget(self._cmp_exclusive_card, 4, 0, 1, 3)
+        grid.addWidget(self._cmp_shared_card, 4, 3, 1, 3)
         for column in range(6):
             grid.setColumnStretch(column, 1)
         return grid
@@ -81,6 +91,7 @@ class DashboardPage(QWidget):
     def refresh(self) -> None:
         """Atualiza os indicadores a partir do banco local."""
         self._refresh_duplicates()
+        self._refresh_comparison()
         if self._context.database_ok:
             self._database_card.set_value(
                 "Operacional", f"Esquema versão {self._context.schema_version}"
@@ -158,6 +169,48 @@ class DashboardPage(QWidget):
             "Estimativa lógica; não é economia garantida em disco",
         )
 
+    def _refresh_comparison(self) -> None:
+        cards = (
+            self._comparison_card,
+            self._cmp_identical_card,
+            self._cmp_different_card,
+            self._cmp_exclusive_card,
+            self._cmp_shared_card,
+        )
+        repo = self._context.comparisons
+        record = None
+        unavailable = "Histórico indisponível"
+        if repo is not None:
+            try:
+                record = repo.latest_completed()
+                unavailable = "Nenhuma comparação de pastas concluída"
+            except DatabaseError:
+                logger.exception("Falha ao consultar a última comparação")
+        if record is None:
+            for metric in cards:
+                metric.set_value("—", unavailable)
+            return
+        self._comparison_card.set_value(
+            format_timestamp(record.started_at), f"A: {record.root_a}\nB: {record.root_b}"
+        )
+        self._cmp_identical_card.set_value(
+            format_count((record.identical_pairs or 0) + (record.renamed_pairs or 0)),
+            f"Correspondências de conteúdo  ·  {format_count(record.identical_pairs)} no mesmo "
+            "caminho",
+        )
+        self._cmp_different_card.set_value(
+            format_count(record.different_count), "Mesmo caminho, conteúdo diferente"
+        )
+        self._cmp_exclusive_card.set_value(
+            format_count((record.only_a_count or 0) + (record.only_b_count or 0)),
+            f"A: {format_count(record.only_a_count)}  ·  B: {format_count(record.only_b_count)}"
+            f"  ·  {format_count(record.indeterminate_count)} indeterminados",
+        )
+        self._cmp_shared_card.set_value(
+            format_bytes(record.shared_bytes),
+            f"{format_count(record.shared_contents)} conteúdos presentes nos dois lados",
+        )
+
     # Estado do sistema --------------------------------------------------
 
     def _build_system_state(self) -> QWidget:
@@ -209,8 +262,9 @@ class DashboardPage(QWidget):
             "unidades selecionadas, sem alterar arquivos.",
             "Disponível: Arquivos Duplicados — identificação de duplicados exatos por "
             "SHA-256, somente para consulta.",
-            "Indisponíveis nesta versão: comparação de pastas, fotografias semelhantes "
-            "e organização.",
+            "Disponível: Comparar Pastas — comparação informativa entre duas pastas "
+            "indexadas, sem sincronizar, copiar ou mover arquivos.",
+            "Indisponíveis nesta versão: fotografias semelhantes e organização.",
         ):
             line = label(text, "BodyText", wrap=True)
             line.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)

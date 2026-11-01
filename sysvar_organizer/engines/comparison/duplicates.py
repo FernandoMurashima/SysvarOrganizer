@@ -20,24 +20,23 @@ grupos. Caminhos que levam ao mesmo arquivo físico (hard links) são lidos uma
 
 from __future__ import annotations
 
-import hashlib
 import logging
 import os
-import stat
 import threading
 import time
 from collections.abc import Callable
 
+from sysvar_organizer.engines.comparison.hashing import (
+    Cancelled,
+    FileVerifier,
+    Unavailable,
+    physical_key,
+)
 from sysvar_organizer.engines.comparison.models import DuplicateProgress, DuplicateResult
 from sysvar_organizer.engines.file_analysis.models import (
     STATUS_CANCELLED,
     STATUS_COMPLETED,
     STATUS_FAILED,
-)
-from sysvar_organizer.engines.file_analysis.scanner import (
-    IO_REPARSE_TAG_MOUNT_POINT,
-    IO_REPARSE_TAG_SYMLINK,
-    to_filesystem_path,
 )
 from sysvar_organizer.persistence.duplicate_store import (
     Candidate,
@@ -47,59 +46,7 @@ from sysvar_organizer.persistence.duplicate_store import (
 
 logger = logging.getLogger(__name__)
 
-CHUNK_SIZE = 1024 * 1024
-EMPTY_SHA256 = hashlib.sha256(b"").hexdigest()
-
-# Atributos do Windows de arquivos que estão apenas na nuvem (OneDrive etc.).
-# Ler o conteúdo provocaria o download, por isso esses arquivos são ignorados.
-FILE_ATTRIBUTE_OFFLINE = 0x1000
-FILE_ATTRIBUTE_RECALL_ON_OPEN = 0x40000
-FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS = 0x400000
-CLOUD_ONLY_ATTRIBUTES = (
-    FILE_ATTRIBUTE_OFFLINE | FILE_ATTRIBUTE_RECALL_ON_OPEN | FILE_ATTRIBUTE_RECALL_ON_DATA_ACCESS
-)
-
-ISSUE_MISSING = "missing"
-ISSUE_MODIFIED = "modified_since_scan"
-ISSUE_CHANGED_DURING_READ = "changed_during_read"
-ISSUE_ACCESS_DENIED = "access_denied"
-ISSUE_READ_ERROR = "read_error"
-ISSUE_LINK = "link_not_followed"
-ISSUE_NOT_REGULAR = "not_regular_file"
-ISSUE_CLOUD_ONLY = "cloud_only"
-
 ProgressCallback = Callable[[DuplicateProgress], None]
-
-
-class _Unavailable(Exception):
-    def __init__(self, kind: str, message: str) -> None:
-        super().__init__(message)
-        self.kind = kind
-        self.message = message
-
-
-class _Cancelled(Exception):
-    pass
-
-
-def path_key(path: str) -> str:
-    return os.path.normcase(path)
-
-
-def physical_key(st: os.stat_result, row_id: int) -> str:
-    """Identifica o arquivo físico. Sem identificador do sistema, cada caminho é único."""
-    if st.st_ino:
-        return f"{st.st_dev}:{st.st_ino}"
-    return f"row:{row_id}"
-
-
-def _os_issue(exc: OSError) -> _Unavailable:
-    if isinstance(exc, FileNotFoundError):
-        return _Unavailable(ISSUE_MISSING, "Arquivo não encontrado (removido ou renomeado).")
-    if isinstance(exc, PermissionError):
-        return _Unavailable(ISSUE_ACCESS_DENIED, "Acesso negado.")
-    detail = exc.strerror or exc.__class__.__name__
-    return _Unavailable(ISSUE_READ_ERROR, f"Falha de leitura: {detail}")
 
 
 class DuplicateFinder:
@@ -116,13 +63,24 @@ class DuplicateFinder:
         self._interval = progress_interval
         self._candidates = 0
         self._processed = 0
-        self._read_count = 0
-        self._reused = 0
         self._skipped = 0
-        self._bytes_read = 0
+        self._verifier = FileVerifier(store, cancel_event, self._emit)
         self._current_path = ""
         self._started = 0.0
         self._last_emit = 0.0
+
+    # Contadores do cálculo de SHA-256 (mantidos pelo verificador compartilhado)
+    @property
+    def _read_count(self) -> int:
+        return self._verifier.read_count
+
+    @property
+    def _reused(self) -> int:
+        return self._verifier.reused
+
+    @property
+    def _bytes_read(self) -> int:
+        return self._verifier.bytes_read
 
     # API -----------------------------------------------------------------
 
@@ -220,8 +178,8 @@ class DuplicateFinder:
             full_path = os.path.join(candidate.folder, candidate.name)
             self._set_current(full_path)
             try:
-                st = self._validate(candidate, full_path, size)
-            except _Unavailable as issue:
+                st = self._verifier.validate(full_path, size, candidate.modified_at)
+            except Unavailable as issue:
                 self._skip(candidate, full_path, issue)
                 continue
             valid.append((candidate, st))
@@ -244,10 +202,10 @@ class DuplicateFinder:
             first_path = os.path.join(first.folder, first.name)
             self._set_current(first_path)
             try:
-                sha256, reused = self._hash(first_path, first_stat, size)
-            except _Cancelled:
+                sha256, reused = self._verifier.sha256(first_path, first_stat, size)
+            except Cancelled:
                 return
-            except _Unavailable as issue:
+            except Unavailable as issue:
                 for candidate, _ in members:
                     self._skip(candidate, os.path.join(candidate.folder, candidate.name), issue)
                 continue
@@ -256,78 +214,9 @@ class DuplicateFinder:
                 self._processed += 1
             self._emit()
 
-    def _validate(self, candidate: Candidate, full_path: str, size: int) -> os.stat_result:
-        try:
-            st = os.stat(to_filesystem_path(full_path), follow_symlinks=False)
-        except OSError as exc:
-            raise _os_issue(exc) from exc
-
-        tag = getattr(st, "st_reparse_tag", 0)
-        if stat.S_ISLNK(st.st_mode) or tag in (IO_REPARSE_TAG_SYMLINK, IO_REPARSE_TAG_MOUNT_POINT):
-            raise _Unavailable(ISSUE_LINK, "Link simbólico ou junção: não seguido.")
-        if not stat.S_ISREG(st.st_mode):
-            raise _Unavailable(ISSUE_NOT_REGULAR, "Não é um arquivo comum.")
-        if (
-            candidate.modified_at is None
-            or st.st_size != size
-            or int(st.st_mtime) != candidate.modified_at
-        ):
-            raise _Unavailable(
-                ISSUE_MODIFIED, "Tamanho ou data de modificação diferentes dos indexados."
-            )
-        if getattr(st, "st_file_attributes", 0) & CLOUD_ONLY_ATTRIBUTES:
-            raise _Unavailable(ISSUE_CLOUD_ONLY, "Disponível apenas na nuvem; não foi baixado.")
-        return st
-
-    def _hash(self, full_path: str, st: os.stat_result, size: int) -> tuple[str, bool]:
-        key = path_key(full_path)
-        volume_id, file_index = str(st.st_dev), str(st.st_ino)
-        if st.st_ino:
-            cached = self._store.cached_hash(key, size, st.st_mtime_ns, volume_id, file_index)
-            if cached is not None:
-                self._reused += 1
-                return cached, True
-
-        if size == 0:
-            sha256 = EMPTY_SHA256
-        else:
-            sha256 = self._read_sha256(full_path, st, size)
-        self._read_count += 1
-        if st.st_ino:
-            self._store.save_hash(key, size, st.st_mtime_ns, volume_id, file_index, sha256)
-        return sha256, False
-
-    def _read_sha256(self, full_path: str, st: os.stat_result, size: int) -> str:
-        digest = hashlib.sha256()
-        buffer = bytearray(CHUNK_SIZE)
-        view = memoryview(buffer)
-        total = 0
-        try:
-            with open(to_filesystem_path(full_path), "rb", buffering=0) as handle:
-                before = os.fstat(handle.fileno())
-                if before.st_size != st.st_size or before.st_mtime_ns != st.st_mtime_ns:
-                    raise _Unavailable(ISSUE_CHANGED_DURING_READ, "Arquivo alterado antes da leitura.")
-                while True:
-                    if self._cancel.is_set():
-                        raise _Cancelled
-                    count = handle.readinto(buffer)
-                    if not count:
-                        break
-                    digest.update(view[:count])
-                    total += count
-                    self._bytes_read += count
-                    self._emit()
-                after = os.fstat(handle.fileno())
-        except OSError as exc:
-            raise _os_issue(exc) from exc
-
-        if total != size or after.st_size != st.st_size or after.st_mtime_ns != st.st_mtime_ns:
-            raise _Unavailable(ISSUE_CHANGED_DURING_READ, "Arquivo alterado durante a leitura.")
-        return digest.hexdigest()
-
     # Contadores e progresso ---------------------------------------------
 
-    def _skip(self, candidate: Candidate, full_path: str, issue: _Unavailable) -> None:
+    def _skip(self, candidate: Candidate, full_path: str, issue: Unavailable) -> None:
         self._store.mark_skipped(
             candidate.row_id, candidate.file_id, issue.kind, full_path, issue.message
         )

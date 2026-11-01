@@ -204,6 +204,120 @@ MIGRATIONS: list[tuple[int, tuple[str, ...]]] = [
             """,
         ),
     ),
+    (
+        # Bloco 04 - comparação de pastas. Somente acréscimos.
+        4,
+        (
+            """
+            CREATE TABLE folder_comparisons (
+                id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+                analysis_a_id        INTEGER NOT NULL REFERENCES analysis_history (id),
+                root_a               TEXT NOT NULL,
+                analysis_b_id        INTEGER NOT NULL REFERENCES analysis_history (id),
+                root_b               TEXT NOT NULL,
+                status               TEXT NOT NULL
+                                     CHECK (status IN ('running', 'completed', 'cancelled', 'failed')),
+                started_at           TEXT NOT NULL,
+                finished_at          TEXT,
+                files_a              INTEGER NOT NULL DEFAULT 0,
+                files_b              INTEGER NOT NULL DEFAULT 0,
+                processed_count      INTEGER NOT NULL DEFAULT 0,
+                read_count           INTEGER NOT NULL DEFAULT 0,
+                reused_count         INTEGER NOT NULL DEFAULT 0,
+                bytes_read           INTEGER NOT NULL DEFAULT 0,
+                identical_pairs      INTEGER,
+                identical_files_a    INTEGER,
+                identical_files_b    INTEGER,
+                renamed_pairs        INTEGER,
+                renamed_listed       INTEGER,
+                renamed_files_a      INTEGER,
+                renamed_files_b      INTEGER,
+                moved_pairs          INTEGER,
+                different_count      INTEGER,
+                only_a_count         INTEGER,
+                only_b_count         INTEGER,
+                indeterminate_count  INTEGER,
+                same_physical_pairs  INTEGER,
+                matched_files_a      INTEGER,
+                matched_files_b      INTEGER,
+                matched_physical     INTEGER,
+                shared_contents      INTEGER,
+                shared_bytes         INTEGER,
+                folders_both         INTEGER,
+                folders_only_a       INTEGER,
+                folders_only_b       INTEGER,
+                content_equivalent   INTEGER,
+                structure_equivalent INTEGER,
+                elapsed_seconds      REAL,
+                error_message        TEXT
+            )
+            """,
+            """
+            CREATE TABLE comparison_files (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                comparison_id INTEGER NOT NULL REFERENCES folder_comparisons (id),
+                side          TEXT NOT NULL CHECK (side IN ('A', 'B')),
+                file_id       INTEGER NOT NULL REFERENCES indexed_files (id),
+                rel_path      TEXT NOT NULL,
+                rel_key       TEXT NOT NULL,
+                folder_key    TEXT NOT NULL,
+                name_key      TEXT NOT NULL,
+                size_bytes    INTEGER NOT NULL,
+                status        TEXT NOT NULL
+                              CHECK (status IN ('pending', 'ok', 'indeterminate')),
+                sha256        TEXT,
+                hash_reused   INTEGER NOT NULL DEFAULT 0,
+                physical_key  TEXT,
+                issue_kind    TEXT,
+                issue_message TEXT
+            )
+            """,
+            """
+            CREATE INDEX idx_comparison_files_rel
+            ON comparison_files (comparison_id, side, rel_key)
+            """,
+            """
+            CREATE INDEX idx_comparison_files_size
+            ON comparison_files (comparison_id, size_bytes)
+            """,
+            """
+            CREATE INDEX idx_comparison_files_hash
+            ON comparison_files (comparison_id, sha256)
+            """,
+            """
+            CREATE TABLE comparison_results (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                comparison_id INTEGER NOT NULL REFERENCES folder_comparisons (id),
+                kind          TEXT NOT NULL
+                              CHECK (kind IN ('identical', 'identical_renamed', 'different',
+                                              'only_a', 'only_b', 'indeterminate')),
+                a_entry_id    INTEGER REFERENCES comparison_files (id),
+                b_entry_id    INTEGER REFERENCES comparison_files (id),
+                size_bytes    INTEGER,
+                same_physical INTEGER NOT NULL DEFAULT 0,
+                name_differs  INTEGER NOT NULL DEFAULT 0,
+                folder_differs INTEGER NOT NULL DEFAULT 0,
+                detail        TEXT
+            )
+            """,
+            """
+            CREATE INDEX idx_comparison_results_kind
+            ON comparison_results (comparison_id, kind)
+            """,
+            """
+            CREATE TABLE comparison_folders (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                comparison_id INTEGER NOT NULL REFERENCES folder_comparisons (id),
+                rel_path      TEXT NOT NULL,
+                status        TEXT NOT NULL CHECK (status IN ('both', 'only_a', 'only_b'))
+            )
+            """,
+            """
+            CREATE INDEX idx_comparison_folders_status
+            ON comparison_folders (comparison_id, status)
+            """,
+        ),
+    ),
 ]
 
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1][0]

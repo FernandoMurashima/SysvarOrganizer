@@ -23,6 +23,7 @@ from sysvar_organizer import APP_NAME, __version__
 from sysvar_organizer.config import settings as keys
 from sysvar_organizer.context import AppContext
 from sysvar_organizer.core.errors import DatabaseError
+from sysvar_organizer.ui.pages.compare import ComparePage
 from sysvar_organizer.ui.pages.dashboard import DashboardPage
 from sysvar_organizer.ui.pages.duplicates import DuplicatesPage
 from sysvar_organizer.ui.pages.storage import StoragePage
@@ -61,6 +62,7 @@ PAGES: tuple[PageSpec, ...] = (
         "compare",
         "Comparar Pastas",
         "Comparação do conteúdo entre pastas escolhidas pelo usuário.",
+        available=True,
     ),
     PageSpec(
         "photos",
@@ -93,6 +95,7 @@ class MainWindow(QMainWindow):
         self._dashboard: DashboardPage | None = None
         self._storage: StoragePage | None = None
         self._duplicates: DuplicatesPage | None = None
+        self._compare: ComparePage | None = None
 
         self.setWindowTitle(APP_NAME)
         self.setMinimumSize(960, 600)
@@ -117,13 +120,7 @@ class MainWindow(QMainWindow):
         self._stack.currentChanged.connect(self._on_page_changed)
         if self._dashboard is not None and self._storage is not None:
             self._storage.analysis_finished.connect(self._dashboard.refresh)
-        if self._storage is not None and self._duplicates is not None:
-            self._storage.analysis_finished.connect(self._duplicates.reload_analyses)
-            # Uma tarefa por vez: varredura e busca de duplicados não concorrem.
-            self._storage.set_busy_check(self._duplicates.is_running)
-            self._duplicates.set_busy_check(self._storage.is_running)
-        if self._dashboard is not None and self._duplicates is not None:
-            self._duplicates.search_finished.connect(self._dashboard.refresh)
+        self._connect_tasks()
         self._nav.setCurrentRow(0)
 
         self._build_status_bar()
@@ -176,6 +173,9 @@ class MainWindow(QMainWindow):
         if spec.key == "duplicates":
             self._duplicates = DuplicatesPage(self._context)
             return self._duplicates
+        if spec.key == "compare":
+            self._compare = ComparePage(self._context)
+            return self._compare
         if spec.key == "settings":
             ctx = self._context
             return UnavailablePage(
@@ -201,12 +201,28 @@ class MainWindow(QMainWindow):
 
     # Navegação ----------------------------------------------------------
 
+    def _connect_tasks(self) -> None:
+        storage, duplicates, compare = self._storage, self._duplicates, self._compare
+        if storage is None or duplicates is None or compare is None:
+            return
+        # Uma tarefa por vez: varredura, busca de duplicados e comparação não concorrem.
+        storage.set_busy_check(lambda: duplicates.is_running() or compare.is_running())
+        duplicates.set_busy_check(lambda: storage.is_running() or compare.is_running())
+        compare.set_busy_check(lambda: storage.is_running() or duplicates.is_running())
+        storage.analysis_finished.connect(duplicates.reload_analyses)
+        storage.analysis_finished.connect(compare.reload_analyses)
+        if self._dashboard is not None:
+            duplicates.search_finished.connect(self._dashboard.refresh)
+            compare.comparison_finished.connect(self._dashboard.refresh)
+
     def _on_page_changed(self, index: int) -> None:
         key = PAGES[index].key
         if self._dashboard is not None and key == "dashboard":
             self._dashboard.refresh()
         if self._duplicates is not None and key == "duplicates":
             self._duplicates.reload_analyses()
+        if self._compare is not None and key == "compare":
+            self._compare.reload_analyses()
 
     def current_page_key(self) -> str:
         item = self._nav.currentItem()
@@ -237,7 +253,7 @@ class MainWindow(QMainWindow):
             logger.exception("Falha ao gravar a geometria da janela")
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - API do Qt
-        for page in (self._storage, self._duplicates):
+        for page in (self._storage, self._duplicates, self._compare):
             if page is not None and not page.request_shutdown():
                 event.ignore()
                 return
