@@ -55,6 +55,16 @@ def format_timestamp(value: str | None) -> str:
         return value
 
 
+def format_epoch(value: int | None) -> str:
+    """Data local a partir de segundos Unix (datas dos arquivos indexados)."""
+    if value is None:
+        return "—"
+    try:
+        return datetime.fromtimestamp(value).strftime("%d/%m/%Y %H:%M")
+    except (OverflowError, OSError, ValueError):
+        return "—"
+
+
 def status_label(status: str, has_warnings: bool = False) -> str:
     if status == "completed" and has_warnings:
         return "Concluída com avisos"

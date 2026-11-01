@@ -57,8 +57,12 @@ class DashboardPage(QWidget):
         self._database_card = MetricCard("BANCO DE DADOS LOCAL")
         self._files_card = MetricCard("ARQUIVOS DA ÚLTIMA ANÁLISE CONCLUÍDA")
         self._volume_card = MetricCard("VOLUME TOTAL INDEXADO")
+        self._groups_card = MetricCard("GRUPOS DE DUPLICADOS")
+        self._excess_card = MetricCard("CÓPIAS EXCEDENTES")
+        self._recoverable_card = MetricCard("ESPAÇO POTENCIALMENTE RECUPERÁVEL")
 
-        # Grade de 6 colunas: 3 cartões na primeira linha e 2 na segunda.
+        # Grade de 6 colunas: 3 cartões na primeira linha, 2 na segunda
+        # (armazenamento) e 3 na terceira (duplicados exatos).
         grid = QGridLayout()
         grid.setHorizontalSpacing(16)
         grid.setVerticalSpacing(16)
@@ -67,12 +71,16 @@ class DashboardPage(QWidget):
         grid.addWidget(self._database_card, 0, 4, 1, 2)
         grid.addWidget(self._files_card, 1, 0, 1, 3)
         grid.addWidget(self._volume_card, 1, 3, 1, 3)
+        grid.addWidget(self._groups_card, 2, 0, 1, 2)
+        grid.addWidget(self._excess_card, 2, 2, 1, 2)
+        grid.addWidget(self._recoverable_card, 2, 4, 1, 2)
         for column in range(6):
             grid.setColumnStretch(column, 1)
         return grid
 
     def refresh(self) -> None:
         """Atualiza os indicadores a partir do banco local."""
+        self._refresh_duplicates()
         if self._context.database_ok:
             self._database_card.set_value(
                 "Operacional", f"Esquema versão {self._context.schema_version}"
@@ -120,6 +128,36 @@ class DashboardPage(QWidget):
                 f"Última análise concluída  ·  {completed.target_path}",
             )
 
+    def _refresh_duplicates(self) -> None:
+        cards = (self._groups_card, self._excess_card, self._recoverable_card)
+        repo = self._context.duplicates
+        if repo is None:
+            for metric in cards:
+                metric.set_value("—", "Histórico indisponível")
+            return
+        try:
+            search = repo.latest_completed()
+        except DatabaseError:
+            logger.exception("Falha ao consultar a última busca de duplicados")
+            for metric in cards:
+                metric.set_value("—", "Histórico indisponível")
+            return
+        if search is None:
+            for metric in cards:
+                metric.set_value("—", "Nenhuma busca de duplicados concluída")
+            return
+        when = format_timestamp(search.started_at)
+        self._groups_card.set_value(
+            format_count(search.groups_count), f"Duplicados exatos  ·  busca de {when}"
+        )
+        self._excess_card.set_value(
+            format_count(search.excess_copies), "Cópias além de uma por grupo"
+        )
+        self._recoverable_card.set_value(
+            format_bytes(search.recoverable_bytes),
+            "Estimativa lógica; não é economia garantida em disco",
+        )
+
     # Estado do sistema --------------------------------------------------
 
     def _build_system_state(self) -> QWidget:
@@ -148,8 +186,8 @@ class DashboardPage(QWidget):
             ("Qt / PySide6", f"{qVersion()} / {PySide6.__version__}"),
             (
                 "Operações em arquivos",
-                "Somente leitura. Análises são executadas apenas quando solicitadas; "
-                "nenhum arquivo é alterado, movido ou excluído.",
+                "Somente leitura. Análises e buscas são executadas apenas quando "
+                "solicitadas; nenhum arquivo é alterado, movido ou excluído.",
             ),
         ]
         box.addSpacing(4)
@@ -169,8 +207,10 @@ class DashboardPage(QWidget):
         for text in (
             "Disponível: Analisar Armazenamento — varredura e indexação de pastas e "
             "unidades selecionadas, sem alterar arquivos.",
-            "Indisponíveis nesta versão: arquivos duplicados, comparação de pastas, "
-            "fotografias semelhantes e organização.",
+            "Disponível: Arquivos Duplicados — identificação de duplicados exatos por "
+            "SHA-256, somente para consulta.",
+            "Indisponíveis nesta versão: comparação de pastas, fotografias semelhantes "
+            "e organização.",
         ):
             line = label(text, "BodyText", wrap=True)
             line.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)

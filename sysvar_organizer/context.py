@@ -9,6 +9,7 @@ from pathlib import Path
 from sysvar_organizer.config import paths
 from sysvar_organizer.core.errors import DatabaseError
 from sysvar_organizer.persistence.database import Database
+from sysvar_organizer.persistence.duplicate_repository import DuplicateRepository
 from sysvar_organizer.persistence.repositories import (
     AnalysisHistoryRepository,
     SettingsRepository,
@@ -27,6 +28,7 @@ class AppContext:
     settings: SettingsRepository | None
     history: AnalysisHistoryRepository | None
     database_error: str | None = None
+    duplicates: DuplicateRepository | None = None
 
     @property
     def database_ok(self) -> bool:
@@ -60,6 +62,15 @@ def build_context() -> AppContext:
             logger.warning("%d análise(s) interrompida(s) registrada(s) como falha", interrupted)
     except DatabaseError:
         logger.exception("Falha ao ajustar análises interrompidas")
+    duplicates = DuplicateRepository(database)
+    try:
+        interrupted = duplicates.mark_interrupted()
+        if interrupted:
+            logger.warning(
+                "%d busca(s) de duplicados interrompida(s) registrada(s) como falha", interrupted
+            )
+    except DatabaseError:
+        logger.exception("Falha ao ajustar buscas de duplicados interrompidas")
 
     return AppContext(
         data_dir=paths.user_data_dir(),
@@ -69,4 +80,5 @@ def build_context() -> AppContext:
         schema_version=version,
         settings=SettingsRepository(database),
         history=history,
+        duplicates=duplicates,
     )

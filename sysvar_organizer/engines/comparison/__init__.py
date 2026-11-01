@@ -1,4 +1,6 @@
-"""Motor de comparação (arquivos duplicados e comparação de pastas).
+"""Motor de comparação.
 
-Reservado. Nenhuma funcionalidade implementada nesta versão.
+* ``duplicates``: identificação de duplicados exatos por SHA-256 (somente
+  leitura; nenhum arquivo é alterado, movido ou excluído).
+* Comparação de pastas: reservada. Nenhuma funcionalidade implementada.
 """

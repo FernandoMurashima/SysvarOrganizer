@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 
 from PySide6.QtCore import QElapsedTimer, QThread, QTimer, Signal
 from PySide6.QtWidgets import (
@@ -67,6 +68,7 @@ class StoragePage(QWidget):
         self._thread: QThread | None = None
         self._worker: ScanWorker | None = None
         self._cancelling = False
+        self._busy_check: Callable[[], bool] | None = None
         self._elapsed = QElapsedTimer()
         self._clock = QTimer(self)
         self._clock.setInterval(500)
@@ -252,9 +254,21 @@ class StoragePage(QWidget):
     def is_running(self) -> bool:
         return self._thread is not None
 
+    def set_busy_check(self, check: Callable[[], bool]) -> None:
+        """Função que indica outra tarefa em andamento (ex.: busca de duplicados)."""
+        self._busy_check = check
+
     def _start(self) -> None:
         database = self._context.database
         if self.is_running() or not self._locations or database is None:
+            return
+        if self._busy_check is not None and self._busy_check():
+            QMessageBox.information(
+                self,
+                APP_NAME,
+                "Há uma busca de duplicados em andamento. Aguarde a conclusão para "
+                "iniciar uma nova análise.",
+            )
             return
 
         self._cancelling = False

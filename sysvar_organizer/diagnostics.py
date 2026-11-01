@@ -32,6 +32,10 @@ MODULES = (
     "sysvar_organizer.engines.file_analysis.scanner",
     "sysvar_organizer.persistence.scan_store",
     "sysvar_organizer.engines.comparison",
+    "sysvar_organizer.engines.comparison.models",
+    "sysvar_organizer.engines.comparison.duplicates",
+    "sysvar_organizer.persistence.duplicate_store",
+    "sysvar_organizer.persistence.duplicate_repository",
     "sysvar_organizer.engines.visual_analysis",
     "sysvar_organizer.operations",
     "sysvar_organizer.ui.theme",
@@ -43,6 +47,8 @@ MODULES = (
     "sysvar_organizer.ui.formatting",
     "sysvar_organizer.ui.drive_dialog",
     "sysvar_organizer.ui.scan_worker",
+    "sysvar_organizer.ui.pages.duplicates",
+    "sysvar_organizer.ui.duplicate_worker",
 )
 
 

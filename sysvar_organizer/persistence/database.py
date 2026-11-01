@@ -107,6 +107,103 @@ MIGRATIONS: list[tuple[int, tuple[str, ...]]] = [
             "CREATE INDEX idx_analysis_issues_analysis ON analysis_issues (analysis_id)",
         ),
     ),
+    (
+        # Bloco 03 - duplicados exatos (SHA-256). Somente acréscimos.
+        # Identificadores de volume e de arquivo do sistema podem exceder o
+        # inteiro de 64 bits do SQLite e por isso são gravados como texto.
+        3,
+        (
+            "CREATE INDEX idx_indexed_files_analysis_size ON indexed_files (analysis_id, size_bytes)",
+            """
+            CREATE TABLE duplicate_searches (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                analysis_id       INTEGER NOT NULL REFERENCES analysis_history (id),
+                status            TEXT NOT NULL
+                                  CHECK (status IN ('running', 'completed', 'cancelled', 'failed')),
+                started_at        TEXT NOT NULL,
+                finished_at       TEXT,
+                candidates_count  INTEGER NOT NULL DEFAULT 0,
+                processed_count   INTEGER NOT NULL DEFAULT 0,
+                read_count        INTEGER NOT NULL DEFAULT 0,
+                reused_count      INTEGER NOT NULL DEFAULT 0,
+                bytes_read        INTEGER NOT NULL DEFAULT 0,
+                skipped_count     INTEGER NOT NULL DEFAULT 0,
+                groups_count      INTEGER,
+                group_files_count INTEGER,
+                logical_bytes     INTEGER,
+                excess_copies     INTEGER,
+                recoverable_bytes INTEGER,
+                hardlink_aliases  INTEGER,
+                elapsed_seconds   REAL,
+                error_message     TEXT
+            )
+            """,
+            "CREATE INDEX idx_duplicate_searches_analysis ON duplicate_searches (analysis_id)",
+            """
+            CREATE TABLE duplicate_groups (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                search_id         INTEGER NOT NULL REFERENCES duplicate_searches (id),
+                sha256            TEXT NOT NULL,
+                size_bytes        INTEGER NOT NULL,
+                files_count       INTEGER NOT NULL,
+                physical_count    INTEGER NOT NULL,
+                excess_copies     INTEGER NOT NULL,
+                recoverable_bytes INTEGER NOT NULL
+            )
+            """,
+            """
+            CREATE UNIQUE INDEX idx_duplicate_groups_key
+            ON duplicate_groups (search_id, size_bytes, sha256)
+            """,
+            """
+            CREATE INDEX idx_duplicate_groups_ranking
+            ON duplicate_groups (search_id, recoverable_bytes)
+            """,
+            """
+            CREATE TABLE duplicate_files (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                search_id         INTEGER NOT NULL REFERENCES duplicate_searches (id),
+                file_id           INTEGER NOT NULL REFERENCES indexed_files (id),
+                size_bytes        INTEGER NOT NULL,
+                status            TEXT NOT NULL
+                                  CHECK (status IN ('pending', 'hashed', 'not_needed', 'skipped')),
+                sha256            TEXT,
+                hash_reused       INTEGER NOT NULL DEFAULT 0,
+                physical_key      TEXT,
+                group_id          INTEGER REFERENCES duplicate_groups (id),
+                is_hardlink_alias INTEGER NOT NULL DEFAULT 0
+            )
+            """,
+            """
+            CREATE INDEX idx_duplicate_files_search_size
+            ON duplicate_files (search_id, size_bytes, sha256)
+            """,
+            "CREATE INDEX idx_duplicate_files_group ON duplicate_files (group_id)",
+            """
+            CREATE TABLE duplicate_issues (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                search_id   INTEGER NOT NULL REFERENCES duplicate_searches (id),
+                file_id     INTEGER REFERENCES indexed_files (id),
+                kind        TEXT NOT NULL,
+                path        TEXT NOT NULL,
+                message     TEXT,
+                occurred_at TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX idx_duplicate_issues_search ON duplicate_issues (search_id)",
+            """
+            CREATE TABLE file_hash_cache (
+                path_key    TEXT PRIMARY KEY NOT NULL,
+                size_bytes  INTEGER NOT NULL,
+                modified_ns INTEGER NOT NULL,
+                volume_id   TEXT NOT NULL,
+                file_index  TEXT NOT NULL,
+                sha256      TEXT NOT NULL,
+                computed_at TEXT NOT NULL
+            )
+            """,
+        ),
+    ),
 ]
 
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1][0]

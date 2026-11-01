@@ -201,6 +201,40 @@ QDialog {
     background: #FFFFFF;
 }
 
+/* Seleção de análise */
+#AnalysisCombo {
+    background: #FFFFFF;
+    color: #1F2937;
+    border: 1px solid #D1D5DB;
+    border-radius: 6px;
+    padding: 6px 10px;
+}
+#AnalysisCombo:disabled {
+    color: #9CA3AF;
+    background: #F9FAFB;
+}
+
+/* Tabelas de resultados */
+#ResultTable {
+    background: #FFFFFF;
+    alternate-background-color: #F9FAFB;
+    border: 1px solid #E5E7EB;
+    border-radius: 8px;
+    color: #1F2937;
+    gridline-color: #F3F4F6;
+    selection-background-color: #DBEAFE;
+    selection-color: #1E3A8A;
+    outline: 0;
+}
+#ResultTable QHeaderView::section {
+    background: #F3F4F6;
+    color: #4B5563;
+    border: none;
+    border-bottom: 1px solid #E5E7EB;
+    padding: 6px 8px;
+    font-weight: 600;
+}
+
 QScrollArea {
     background: transparent;
     border: none;
