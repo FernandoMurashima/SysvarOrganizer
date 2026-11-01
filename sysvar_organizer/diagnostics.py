@@ -41,6 +41,14 @@ MODULES = (
     "sysvar_organizer.engines.visual_analysis.signatures",
     "sysvar_organizer.engines.visual_analysis.grouping",
     "sysvar_organizer.engines.visual_analysis.similar",
+    "sysvar_organizer.engines.organization",
+    "sysvar_organizer.engines.organization.categories",
+    "sysvar_organizer.engines.organization.rules",
+    "sysvar_organizer.engines.organization.sensitive",
+    "sysvar_organizer.engines.organization.models",
+    "sysvar_organizer.engines.organization.planner",
+    "sysvar_organizer.persistence.organization_store",
+    "sysvar_organizer.persistence.organization_repository",
     "sysvar_organizer.persistence.visual_store",
     "sysvar_organizer.persistence.visual_repository",
     "sysvar_organizer.persistence.hash_cache",
@@ -66,6 +74,8 @@ MODULES = (
     "sysvar_organizer.ui.pages.photos",
     "sysvar_organizer.ui.visual_worker",
     "sysvar_organizer.ui.thumbnails",
+    "sysvar_organizer.ui.pages.organization",
+    "sysvar_organizer.ui.organization_worker",
 )
 
 

@@ -68,6 +68,10 @@ class DashboardPage(QWidget):
         self._photo_groups_card = MetricCard("GRUPOS DE FOTOGRAFIAS SEMELHANTES")
         self._photo_images_card = MetricCard("FOTOGRAFIAS ENVOLVIDAS")
         self._photo_date_card = MetricCard("ÚLTIMA ANÁLISE VISUAL")
+        self._org_date_card = MetricCard("ÚLTIMA SIMULAÇÃO DE ORGANIZAÇÃO")
+        self._org_files_card = MetricCard("ARQUIVOS CLASSIFICADOS (SIMULAÇÃO)")
+        self._org_conflicts_card = MetricCard("CONFLITOS (SIMULAÇÃO)")
+        self._org_review_card = MetricCard("REQUEREM REVISÃO (SIMULAÇÃO)")
 
         # Grade de 6 colunas: 3 cartões na primeira linha, 2 na segunda
         # (armazenamento) e 3 na terceira (duplicados exatos).
@@ -90,6 +94,10 @@ class DashboardPage(QWidget):
         grid.addWidget(self._photo_groups_card, 5, 0, 1, 2)
         grid.addWidget(self._photo_images_card, 5, 2, 1, 2)
         grid.addWidget(self._photo_date_card, 5, 4, 1, 2)
+        grid.addWidget(self._org_date_card, 6, 0, 1, 3)
+        grid.addWidget(self._org_files_card, 6, 3, 1, 3)
+        grid.addWidget(self._org_conflicts_card, 7, 0, 1, 3)
+        grid.addWidget(self._org_review_card, 7, 3, 1, 3)
         for column in range(6):
             grid.setColumnStretch(column, 1)
         return grid
@@ -99,6 +107,7 @@ class DashboardPage(QWidget):
         self._refresh_duplicates()
         self._refresh_comparison()
         self._refresh_photos()
+        self._refresh_organization()
         if self._context.database_ok:
             self._database_card.set_value(
                 "Operacional", f"Esquema versão {self._context.schema_version}"
@@ -244,6 +253,44 @@ class DashboardPage(QWidget):
         )
         self._photo_date_card.set_value(format_timestamp(record.started_at), record.root)
 
+    def _refresh_organization(self) -> None:
+        cards = (
+            self._org_date_card,
+            self._org_files_card,
+            self._org_conflicts_card,
+            self._org_review_card,
+        )
+        repo = self._context.organizations
+        record = None
+        unavailable = "Histórico indisponível"
+        if repo is not None:
+            try:
+                record = repo.latest_completed()
+                unavailable = "Nenhuma simulação de organização concluída"
+            except DatabaseError:
+                logger.exception("Falha ao consultar a última simulação")
+        if record is None:
+            for metric in cards:
+                metric.set_value("—", unavailable)
+            return
+        self._org_date_card.set_value(
+            format_timestamp(record.started_at),
+            f"Modelo {record.model}  ·  somente simulação, nada foi alterado no disco",
+        )
+        self._org_files_card.set_value(
+            format_count(record.files_count),
+            f"Volume envolvido: {format_bytes(record.proposal_bytes)} "
+            "(não é espaço recuperável)",
+        )
+        self._org_conflicts_card.set_value(
+            format_count(record.conflict_count), "Requerem decisão: mesmo caminho proposto"
+        )
+        self._org_review_card.set_value(
+            format_count(record.review_count),
+            f"{format_count(record.invalid_count)} caminhos inválidos  ·  "
+            f"{format_count(record.excluded_count)} excluídos (estruturas sensíveis)",
+        )
+
     # Estado do sistema --------------------------------------------------
 
     def _build_system_state(self) -> QWidget:
@@ -299,7 +346,8 @@ class DashboardPage(QWidget):
             "indexadas, sem sincronizar, copiar ou mover arquivos.",
             "Disponível: Fotografias Semelhantes — semelhança visual por assinatura "
             "perceptual, somente para consulta.",
-            "Indisponível nesta versão: organização.",
+            "Disponível: Organização — somente simulação (prévia); nenhuma pasta é criada "
+            "e nenhum arquivo é movido.",
         ):
             line = label(text, "BodyText", wrap=True)
             line.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)

@@ -413,6 +413,93 @@ MIGRATIONS: list[tuple[int, tuple[str, ...]]] = [
             "CREATE INDEX idx_visual_group_members_group ON visual_group_members (group_id)",
         ),
     ),
+    (
+        # Bloco 06 - classificação e prévia de organização (somente simulação).
+        6,
+        (
+            """
+            CREATE TABLE organization_simulations (
+                id                 INTEGER PRIMARY KEY AUTOINCREMENT,
+                analysis_id        INTEGER NOT NULL REFERENCES analysis_history (id),
+                root               TEXT NOT NULL,
+                model              TEXT NOT NULL CHECK (model IN ('A', 'B', 'C')),
+                destination        TEXT NOT NULL,
+                exclude_sensitive  INTEGER NOT NULL,
+                rule               TEXT NOT NULL,
+                alerts             TEXT,
+                status             TEXT NOT NULL
+                                   CHECK (status IN ('running', 'completed', 'cancelled', 'failed')),
+                started_at         TEXT NOT NULL,
+                finished_at        TEXT,
+                files_count        INTEGER NOT NULL DEFAULT 0,
+                processed_count    INTEGER NOT NULL DEFAULT 0,
+                total_bytes        INTEGER,
+                proposal_bytes     INTEGER,
+                ok_count           INTEGER,
+                already_count      INTEGER,
+                review_count       INTEGER,
+                conflict_count     INTEGER,
+                invalid_count      INTEGER,
+                excluded_count     INTEGER,
+                folders_count      INTEGER,
+                structures_count   INTEGER,
+                elapsed_seconds    REAL,
+                error_message      TEXT
+            )
+            """,
+            """
+            CREATE TABLE organization_items (
+                id              INTEGER PRIMARY KEY AUTOINCREMENT,
+                simulation_id   INTEGER NOT NULL REFERENCES organization_simulations (id),
+                file_id         INTEGER NOT NULL REFERENCES indexed_files (id),
+                category        TEXT NOT NULL,
+                ambiguous       INTEGER NOT NULL DEFAULT 0,
+                year            INTEGER,
+                month           INTEGER,
+                proposed_path   TEXT,
+                proposed_key    TEXT,
+                proposed_folder TEXT,
+                status          TEXT NOT NULL
+                                CHECK (status IN ('ok', 'already_in_place', 'review', 'conflict',
+                                                  'invalid', 'excluded')),
+                issues          TEXT NOT NULL DEFAULT '',
+                rule            TEXT NOT NULL,
+                justification   TEXT NOT NULL,
+                structure_path  TEXT
+            )
+            """,
+            """
+            CREATE INDEX idx_organization_items_status
+            ON organization_items (simulation_id, status)
+            """,
+            """
+            CREATE INDEX idx_organization_items_category
+            ON organization_items (simulation_id, category)
+            """,
+            """
+            CREATE INDEX idx_organization_items_key
+            ON organization_items (simulation_id, proposed_key)
+            """,
+            """
+            CREATE INDEX idx_organization_items_folder
+            ON organization_items (simulation_id, proposed_folder)
+            """,
+            """
+            CREATE TABLE organization_structures (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                simulation_id INTEGER NOT NULL REFERENCES organization_simulations (id),
+                path          TEXT NOT NULL,
+                kind          TEXT NOT NULL,
+                reason        TEXT NOT NULL,
+                files_count   INTEGER NOT NULL DEFAULT 0
+            )
+            """,
+            """
+            CREATE INDEX idx_organization_structures_simulation
+            ON organization_structures (simulation_id)
+            """,
+        ),
+    ),
 ]
 
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1][0]

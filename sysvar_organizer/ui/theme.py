@@ -201,6 +201,19 @@ QDialog {
     background: #FFFFFF;
 }
 
+/* Campos de texto */
+#TextInput {
+    background: #FFFFFF;
+    color: #1F2937;
+    border: 1px solid #D1D5DB;
+    border-radius: 6px;
+    padding: 6px 10px;
+}
+#TextInput:disabled {
+    color: #9CA3AF;
+    background: #F9FAFB;
+}
+
 /* Seleção de análise */
 #AnalysisCombo {
     background: #FFFFFF;

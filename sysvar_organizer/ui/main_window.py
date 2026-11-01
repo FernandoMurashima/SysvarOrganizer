@@ -26,6 +26,7 @@ from sysvar_organizer.core.errors import DatabaseError
 from sysvar_organizer.ui.pages.compare import ComparePage
 from sysvar_organizer.ui.pages.dashboard import DashboardPage
 from sysvar_organizer.ui.pages.duplicates import DuplicatesPage
+from sysvar_organizer.ui.pages.organization import OrganizationPage
 from sysvar_organizer.ui.pages.photos import PhotosPage
 from sysvar_organizer.ui.pages.storage import StoragePage
 from sysvar_organizer.ui.pages.unavailable import UnavailablePage
@@ -75,6 +76,7 @@ PAGES: tuple[PageSpec, ...] = (
         "organization",
         "Organização",
         "Organização de arquivos segundo critérios definidos pelo usuário.",
+        available=True,
     ),
     PageSpec(
         "history",
@@ -99,6 +101,7 @@ class MainWindow(QMainWindow):
         self._duplicates: DuplicatesPage | None = None
         self._compare: ComparePage | None = None
         self._photos: PhotosPage | None = None
+        self._organization: OrganizationPage | None = None
 
         self.setWindowTitle(APP_NAME)
         self.setMinimumSize(960, 600)
@@ -182,6 +185,9 @@ class MainWindow(QMainWindow):
         if spec.key == "photos":
             self._photos = PhotosPage(self._context)
             return self._photos
+        if spec.key == "organization":
+            self._organization = OrganizationPage(self._context)
+            return self._organization
         if spec.key == "settings":
             ctx = self._context
             return UnavailablePage(
@@ -209,22 +215,24 @@ class MainWindow(QMainWindow):
 
     def _connect_tasks(self) -> None:
         storage, duplicates = self._storage, self._duplicates
-        compare, photos = self._compare, self._photos
-        if storage is None or duplicates is None or compare is None or photos is None:
+        compare, photos, organization = self._compare, self._photos, self._organization
+        tasks = (storage, duplicates, compare, photos, organization)
+        if any(task is None for task in tasks):
             return
-        # Uma tarefa por vez: varredura, duplicados, comparação e análise visual
-        # nunca são executadas simultaneamente.
-        tasks = (storage, duplicates, compare, photos)
+        # Uma tarefa por vez: varredura, duplicados, comparação, análise visual e
+        # simulação de organização nunca são executadas simultaneamente.
         for task in tasks:
             others = tuple(other for other in tasks if other is not task)
             task.set_busy_check(lambda others=others: any(o.is_running() for o in others))
         storage.analysis_finished.connect(duplicates.reload_analyses)
         storage.analysis_finished.connect(compare.reload_analyses)
         storage.analysis_finished.connect(photos.reload_analyses)
+        storage.analysis_finished.connect(organization.reload_analyses)
         if self._dashboard is not None:
             duplicates.search_finished.connect(self._dashboard.refresh)
             compare.comparison_finished.connect(self._dashboard.refresh)
             photos.search_finished.connect(self._dashboard.refresh)
+            organization.simulation_finished.connect(self._dashboard.refresh)
 
     def _on_page_changed(self, index: int) -> None:
         key = PAGES[index].key
@@ -236,6 +244,8 @@ class MainWindow(QMainWindow):
             self._compare.reload_analyses()
         if self._photos is not None and key == "photos":
             self._photos.reload_analyses()
+        if self._organization is not None and key == "organization":
+            self._organization.reload_analyses()
 
     def current_page_key(self) -> str:
         item = self._nav.currentItem()
@@ -266,7 +276,13 @@ class MainWindow(QMainWindow):
             logger.exception("Falha ao gravar a geometria da janela")
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - API do Qt
-        for page in (self._storage, self._duplicates, self._compare, self._photos):
+        for page in (
+            self._storage,
+            self._duplicates,
+            self._compare,
+            self._photos,
+            self._organization,
+        ):
             if page is not None and not page.request_shutdown():
                 event.ignore()
                 return

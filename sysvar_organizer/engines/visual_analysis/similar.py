@@ -416,4 +416,3 @@ def estimate_candidates(repository, analysis_id: int, root: str) -> tuple[int, i
             count += c
             size += s
     return count, size, indexed
-

@@ -11,6 +11,7 @@ from sysvar_organizer.core.errors import DatabaseError
 from sysvar_organizer.persistence.comparison_repository import ComparisonRepository
 from sysvar_organizer.persistence.database import Database
 from sysvar_organizer.persistence.duplicate_repository import DuplicateRepository
+from sysvar_organizer.persistence.organization_repository import OrganizationRepository
 from sysvar_organizer.persistence.visual_repository import VisualRepository
 from sysvar_organizer.persistence.repositories import (
     AnalysisHistoryRepository,
@@ -33,6 +34,7 @@ class AppContext:
     duplicates: DuplicateRepository | None = None
     comparisons: ComparisonRepository | None = None
     visuals: VisualRepository | None = None
+    organizations: OrganizationRepository | None = None
 
     @property
     def database_ok(self) -> bool:
@@ -95,6 +97,16 @@ def build_context() -> AppContext:
             )
     except DatabaseError:
         logger.exception("Falha ao ajustar buscas de fotografias interrompidas")
+    organizations = OrganizationRepository(database)
+    try:
+        interrupted = organizations.mark_interrupted()
+        if interrupted:
+            logger.warning(
+                "%d simulação(ões) de organização interrompida(s) registrada(s) como falha",
+                interrupted,
+            )
+    except DatabaseError:
+        logger.exception("Falha ao ajustar simulações interrompidas")
 
     return AppContext(
         data_dir=paths.user_data_dir(),
@@ -107,4 +119,5 @@ def build_context() -> AppContext:
         duplicates=duplicates,
         comparisons=comparisons,
         visuals=visuals,
+        organizations=organizations,
     )
