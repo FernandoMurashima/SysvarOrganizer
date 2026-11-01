@@ -58,6 +58,13 @@ MODULES = (
     "sysvar_organizer.persistence.duplicate_repository",
     "sysvar_organizer.engines.visual_analysis",
     "sysvar_organizer.operations",
+    "sysvar_organizer.operations.models",
+    "sysvar_organizer.operations.safety",
+    "sysvar_organizer.operations.associations",
+    "sysvar_organizer.operations.planning",
+    "sysvar_organizer.operations.executor",
+    "sysvar_organizer.persistence.operations_store",
+    "sysvar_organizer.persistence.history_repository",
     "sysvar_organizer.ui.theme",
     "sysvar_organizer.ui.widgets",
     "sysvar_organizer.ui.main_window",
@@ -76,6 +83,8 @@ MODULES = (
     "sysvar_organizer.ui.thumbnails",
     "sysvar_organizer.ui.pages.organization",
     "sysvar_organizer.ui.organization_worker",
+    "sysvar_organizer.ui.pages.operations_review",
+    "sysvar_organizer.ui.pages.history",
 )
 
 

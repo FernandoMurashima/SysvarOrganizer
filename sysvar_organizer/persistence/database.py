@@ -500,6 +500,112 @@ MIGRATIONS: list[tuple[int, tuple[str, ...]]] = [
             """,
         ),
     ),
+    (
+        # Bloco 07 - planos de operação, revisão, execução (somente área de teste),
+        # eventos e recuperação. Somente acréscimos.
+        7,
+        (
+            """
+            CREATE TABLE operation_plans (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                plan_key      TEXT NOT NULL UNIQUE,
+                simulation_id INTEGER REFERENCES organization_simulations (id),
+                analysis_id   INTEGER REFERENCES analysis_history (id),
+                environment   TEXT NOT NULL CHECK (environment IN ('real', 'test')),
+                test_root     TEXT,
+                operation     TEXT NOT NULL CHECK (operation IN ('move', 'copy')),
+                destination   TEXT NOT NULL,
+                status        TEXT NOT NULL CHECK (status IN ('open', 'cancelled')),
+                created_at    TEXT NOT NULL,
+                updated_at    TEXT NOT NULL,
+                items_count   INTEGER NOT NULL DEFAULT 0
+            )
+            """,
+            """
+            CREATE TABLE operation_items (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                plan_id          INTEGER NOT NULL REFERENCES operation_plans (id),
+                action_key       TEXT NOT NULL UNIQUE,
+                unit_key         TEXT NOT NULL,
+                file_id          INTEGER REFERENCES indexed_files (id),
+                source_path      TEXT NOT NULL,
+                destination_path TEXT,
+                action_type      TEXT NOT NULL
+                                 CHECK (action_type IN ('keep', 'copy', 'move',
+                                                        'separate_review', 'restore')),
+                justification    TEXT NOT NULL,
+                size_bytes       INTEGER NOT NULL,
+                expected_mtime   INTEGER,
+                sensitive        INTEGER NOT NULL DEFAULT 0,
+                alerts           TEXT NOT NULL DEFAULT '',
+                dependencies     TEXT NOT NULL DEFAULT '',
+                block_reason     TEXT,
+                state            TEXT NOT NULL
+                                 CHECK (state IN ('planned', 'validated', 'blocked', 'running',
+                                                  'completed', 'failed', 'revert_pending',
+                                                  'reverted', 'interrupted')),
+                approved         INTEGER NOT NULL DEFAULT 0,
+                reversible       INTEGER NOT NULL DEFAULT 0,
+                src_volume       TEXT,
+                src_index        TEXT,
+                src_mtime_ns     INTEGER,
+                sha256           TEXT,
+                dst_volume       TEXT,
+                dst_index        TEXT,
+                dst_mtime_ns     INTEGER,
+                updated_at       TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX idx_operation_items_state ON operation_items (plan_id, state)",
+            "CREATE INDEX idx_operation_items_unit ON operation_items (plan_id, unit_key)",
+            """
+            CREATE TABLE operation_reviews (
+                id         INTEGER PRIMARY KEY AUTOINCREMENT,
+                item_id    INTEGER NOT NULL REFERENCES operation_items (id),
+                decision   TEXT NOT NULL CHECK (decision IN ('approved', 'rejected')),
+                decided_at TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX idx_operation_reviews_item ON operation_reviews (item_id)",
+            """
+            CREATE TABLE operation_executions (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                item_id     INTEGER NOT NULL REFERENCES operation_items (id),
+                kind        TEXT NOT NULL CHECK (kind IN ('execute', 'reconcile')),
+                prior_state TEXT NOT NULL,
+                started_at  TEXT NOT NULL,
+                finished_at TEXT,
+                result      TEXT,
+                method      TEXT,
+                message     TEXT
+            )
+            """,
+            "CREATE INDEX idx_operation_executions_item ON operation_executions (item_id)",
+            """
+            CREATE TABLE operation_events (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                plan_id     INTEGER NOT NULL REFERENCES operation_plans (id),
+                item_id     INTEGER REFERENCES operation_items (id),
+                occurred_at TEXT NOT NULL,
+                level       TEXT NOT NULL CHECK (level IN ('info', 'warning', 'error')),
+                code        TEXT NOT NULL,
+                message     TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX idx_operation_events_plan ON operation_events (plan_id)",
+            """
+            CREATE TABLE operation_recoveries (
+                id           INTEGER PRIMARY KEY AUTOINCREMENT,
+                item_id      INTEGER NOT NULL REFERENCES operation_items (id),
+                requested_at TEXT NOT NULL,
+                finished_at  TEXT,
+                result       TEXT CHECK (result IN ('reverted', 'blocked', 'failed')),
+                message      TEXT
+            )
+            """,
+            "CREATE INDEX idx_operation_recoveries_item ON operation_recoveries (item_id)",
+        ),
+    ),
 ]
 
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1][0]

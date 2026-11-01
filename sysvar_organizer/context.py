@@ -11,6 +11,8 @@ from sysvar_organizer.core.errors import DatabaseError
 from sysvar_organizer.persistence.comparison_repository import ComparisonRepository
 from sysvar_organizer.persistence.database import Database
 from sysvar_organizer.persistence.duplicate_repository import DuplicateRepository
+from sysvar_organizer.persistence.history_repository import HistoryRepository
+from sysvar_organizer.persistence.operations_store import OperationsStore
 from sysvar_organizer.persistence.organization_repository import OrganizationRepository
 from sysvar_organizer.persistence.visual_repository import VisualRepository
 from sysvar_organizer.persistence.repositories import (
@@ -35,6 +37,8 @@ class AppContext:
     comparisons: ComparisonRepository | None = None
     visuals: VisualRepository | None = None
     organizations: OrganizationRepository | None = None
+    operations: OperationsStore | None = None
+    history_log: HistoryRepository | None = None
 
     @property
     def database_ok(self) -> bool:
@@ -107,6 +111,15 @@ def build_context() -> AppContext:
             )
     except DatabaseError:
         logger.exception("Falha ao ajustar simulações interrompidas")
+    operations = OperationsStore(database)
+    try:
+        interrupted = operations.mark_interrupted()
+        if interrupted:
+            logger.warning(
+                "%d ação(ões) de operação interrompida(s); reconciliação obrigatória", interrupted
+            )
+    except DatabaseError:
+        logger.exception("Falha ao registrar operações interrompidas")
 
     return AppContext(
         data_dir=paths.user_data_dir(),
@@ -120,4 +133,6 @@ def build_context() -> AppContext:
         comparisons=comparisons,
         visuals=visuals,
         organizations=organizations,
+        operations=operations,
+        history_log=HistoryRepository(database),
     )

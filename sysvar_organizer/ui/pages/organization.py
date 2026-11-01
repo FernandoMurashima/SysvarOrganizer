@@ -1,7 +1,9 @@
-"""Página Organização: classificação e prévia (simulação) da organização.
+"""Página Organização: classificação, prévia (simulação) e revisão de operações.
 
-Tudo nesta tela é SIMULAÇÃO: nenhum arquivo ou pasta é criado, copiado,
-movido, renomeado ou excluído, nem mesmo no destino informado.
+A prévia é SIMULAÇÃO: nenhum arquivo ou pasta é criado, copiado, movido,
+renomeado ou excluído, nem mesmo no destino informado. A seção "Revisão de
+operações" apenas registra planos e seleções; a execução sobre arquivos reais
+está bloqueada nesta etapa.
 """
 
 from __future__ import annotations
@@ -51,6 +53,7 @@ from sysvar_organizer.ui.formatting import (
 )
 from sysvar_organizer.ui.organization_worker import OrganizationWorker
 from sysvar_organizer.ui.pages.compare import SetSelector
+from sysvar_organizer.ui.pages.operations_review import OperationsReviewPanel
 from sysvar_organizer.ui.widgets import (
     ElidedLabel,
     MetricCard,
@@ -116,6 +119,8 @@ class OrganizationPage(QWidget):
         layout.addWidget(self._build_summary())
         layout.addWidget(self._build_preview())
         layout.addWidget(self._build_tree())
+        self._review = OperationsReviewPanel(context)
+        layout.addWidget(self._review)
         layout.addStretch(1)
 
         self.reload_analyses()
@@ -522,6 +527,9 @@ class OrganizationPage(QWidget):
 
     def _show_simulation(self, record: SimulationRecord | None, title: str) -> None:
         self._simulation = record
+        self._review.set_simulation(
+            record if record is not None and record.status == STATUS_COMPLETED else None
+        )
         for table in (self._categories_table, self._structures_table, self._items_table, self._tree_table):
             table.setRowCount(0)
         self._clear_details()
@@ -693,3 +701,5 @@ class OrganizationPage(QWidget):
             and self._destination_ok
         )
         self._cancel_button.setEnabled(running and not self._cancelling)
+        if hasattr(self, "_review"):
+            self._review.set_locked(running)

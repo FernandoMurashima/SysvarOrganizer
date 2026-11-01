@@ -26,6 +26,7 @@ from sysvar_organizer.core.errors import DatabaseError
 from sysvar_organizer.ui.pages.compare import ComparePage
 from sysvar_organizer.ui.pages.dashboard import DashboardPage
 from sysvar_organizer.ui.pages.duplicates import DuplicatesPage
+from sysvar_organizer.ui.pages.history import HistoryPage
 from sysvar_organizer.ui.pages.organization import OrganizationPage
 from sysvar_organizer.ui.pages.photos import PhotosPage
 from sysvar_organizer.ui.pages.storage import StoragePage
@@ -82,6 +83,7 @@ PAGES: tuple[PageSpec, ...] = (
         "history",
         "Histórico",
         "Consulta às análises e operações realizadas.",
+        available=True,
     ),
     PageSpec(
         "settings",
@@ -102,6 +104,7 @@ class MainWindow(QMainWindow):
         self._compare: ComparePage | None = None
         self._photos: PhotosPage | None = None
         self._organization: OrganizationPage | None = None
+        self._history: HistoryPage | None = None
 
         self.setWindowTitle(APP_NAME)
         self.setMinimumSize(960, 600)
@@ -188,6 +191,9 @@ class MainWindow(QMainWindow):
         if spec.key == "organization":
             self._organization = OrganizationPage(self._context)
             return self._organization
+        if spec.key == "history":
+            self._history = HistoryPage(self._context)
+            return self._history
         if spec.key == "settings":
             ctx = self._context
             return UnavailablePage(
@@ -246,6 +252,8 @@ class MainWindow(QMainWindow):
             self._photos.reload_analyses()
         if self._organization is not None and key == "organization":
             self._organization.reload_analyses()
+        if self._history is not None and key == "history":
+            self._history.refresh()
 
     def current_page_key(self) -> str:
         item = self._nav.currentItem()

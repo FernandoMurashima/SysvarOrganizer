@@ -319,8 +319,8 @@ class DashboardPage(QWidget):
             ("Qt / PySide6", f"{qVersion()} / {PySide6.__version__}"),
             (
                 "Operações em arquivos",
-                "Somente leitura. Análises e buscas são executadas apenas quando "
-                "solicitadas; nenhum arquivo é alterado, movido ou excluído.",
+                "Execução sobre arquivos reais bloqueada. Análises, buscas, prévias e "
+                "planos são apenas registrados; nenhum arquivo é alterado, movido ou excluído.",
             ),
         ]
         box.addSpacing(4)
@@ -346,8 +346,11 @@ class DashboardPage(QWidget):
             "indexadas, sem sincronizar, copiar ou mover arquivos.",
             "Disponível: Fotografias Semelhantes — semelhança visual por assinatura "
             "perceptual, somente para consulta.",
-            "Disponível: Organização — somente simulação (prévia); nenhuma pasta é criada "
-            "e nenhum arquivo é movido.",
+            "Disponível: Organização — simulação (prévia) e revisão de operações: planos "
+            "podem ser criados e revisados, mas a execução sobre arquivos reais está "
+            "bloqueada nesta etapa.",
+            "Disponível: Histórico — consulta às atividades, aos planos de operação, "
+            "às falhas e às reversões registradas.",
         ):
             line = label(text, "BodyText", wrap=True)
             line.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
