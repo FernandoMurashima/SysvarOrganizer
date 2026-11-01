@@ -1,0 +1,17 @@
+# Ambiente virtual
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Dados locais (o banco do aplicativo fica fora do repositório)
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.log
