@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import logging
 import platform
-from datetime import datetime
 
 import PySide6
 from PySide6.QtCore import Qt, qVersion
@@ -13,7 +12,14 @@ from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QWidget
 from sysvar_organizer import APP_NAME, PROJECT_CODE, __version__
 from sysvar_organizer.context import AppContext
 from sysvar_organizer.core.errors import DatabaseError
+from sysvar_organizer.ui.formatting import (
+    format_bytes,
+    format_count,
+    format_timestamp,
+    status_label,
+)
 from sysvar_organizer.ui.widgets import (
+    MetricCard,
     badge,
     card,
     field_grid,
@@ -23,13 +29,6 @@ from sysvar_organizer.ui.widgets import (
 )
 
 logger = logging.getLogger(__name__)
-
-_STATUS_LABELS = {
-    "running": "em andamento",
-    "completed": "concluída",
-    "failed": "com falha",
-    "cancelled": "cancelada",
-}
 
 
 class DashboardPage(QWidget):
@@ -48,51 +47,78 @@ class DashboardPage(QWidget):
         layout.addWidget(self._build_system_state())
         layout.addWidget(self._build_operations_area())
         layout.addStretch(1)
+        self.refresh()
 
     # Indicadores --------------------------------------------------------
 
     def _build_indicators(self) -> QGridLayout:
-        analyses_value, analyses_hint = "—", "Histórico indisponível"
-        last_value, last_hint = "—", "Histórico indisponível"
+        self._analyses_card = MetricCard("ANÁLISES REGISTRADAS")
+        self._last_card = MetricCard("ÚLTIMA ANÁLISE")
+        self._database_card = MetricCard("BANCO DE DADOS LOCAL")
+        self._files_card = MetricCard("ARQUIVOS DA ÚLTIMA ANÁLISE CONCLUÍDA")
+        self._volume_card = MetricCard("VOLUME TOTAL INDEXADO")
 
-        history = self._context.history
-        if history is not None:
-            try:
-                total = history.count()
-                latest = history.latest()
-            except DatabaseError:
-                logger.exception("Falha ao consultar o histórico de análises")
-            else:
-                analyses_value = str(total)
-                analyses_hint = "Registradas no histórico local"
-                if latest is None:
-                    last_value, last_hint = "Nenhuma", "Nenhuma análise realizada"
-                else:
-                    last_value = _format_timestamp(latest.started_at)
-                    last_hint = f"Situação: {_STATUS_LABELS.get(latest.status, latest.status)}"
-
-        if self._context.database_ok:
-            db_value = "Operacional"
-            db_hint = f"Esquema versão {self._context.schema_version}"
-        else:
-            db_value = "Indisponível"
-            db_hint = "Aplicativo sem persistência"
-
+        # Grade de 6 colunas: 3 cartões na primeira linha e 2 na segunda.
         grid = QGridLayout()
         grid.setHorizontalSpacing(16)
-        cards = [
-            ("ANÁLISES REGISTRADAS", analyses_value, analyses_hint),
-            ("ÚLTIMA ANÁLISE", last_value, last_hint),
-            ("BANCO DE DADOS LOCAL", db_value, db_hint),
-        ]
-        for column, (title, value, hint) in enumerate(cards):
-            frame, box = card()
-            box.addWidget(label(title, "CardTitle"))
-            box.addWidget(label(value, "MetricValue"))
-            box.addWidget(label(hint, "MetricHint", wrap=True))
-            grid.addWidget(frame, 0, column)
+        grid.setVerticalSpacing(16)
+        grid.addWidget(self._analyses_card, 0, 0, 1, 2)
+        grid.addWidget(self._last_card, 0, 2, 1, 2)
+        grid.addWidget(self._database_card, 0, 4, 1, 2)
+        grid.addWidget(self._files_card, 1, 0, 1, 3)
+        grid.addWidget(self._volume_card, 1, 3, 1, 3)
+        for column in range(6):
             grid.setColumnStretch(column, 1)
         return grid
+
+    def refresh(self) -> None:
+        """Atualiza os indicadores a partir do banco local."""
+        if self._context.database_ok:
+            self._database_card.set_value(
+                "Operacional", f"Esquema versão {self._context.schema_version}"
+            )
+        else:
+            self._database_card.set_value("Indisponível", "Aplicativo sem persistência")
+
+        unavailable = "Histórico indisponível"
+        history = self._context.history
+        if history is None:
+            for metric in (self._analyses_card, self._last_card, self._files_card, self._volume_card):
+                metric.set_value("—", unavailable)
+            return
+        try:
+            total = history.count()
+            latest = history.latest()
+            completed = history.latest_completed()
+        except DatabaseError:
+            logger.exception("Falha ao consultar o histórico de análises")
+            for metric in (self._analyses_card, self._last_card, self._files_card, self._volume_card):
+                metric.set_value("—", unavailable)
+            return
+
+        self._analyses_card.set_value(format_count(total), "Registradas no histórico local")
+
+        if latest is None:
+            self._last_card.set_value("Nenhuma", "Nenhuma análise realizada")
+        else:
+            self._last_card.set_value(
+                format_timestamp(latest.started_at),
+                f"Situação: {status_label(latest.status, latest.has_warnings).lower()}",
+            )
+
+        if completed is None:
+            self._files_card.set_value("—", "Nenhuma análise concluída")
+            self._volume_card.set_value("—", "Nenhuma análise concluída")
+        else:
+            self._files_card.set_value(
+                format_count(completed.files_count),
+                f"Em {format_count(completed.folders_count)} pastas  ·  "
+                f"{format_timestamp(completed.started_at)}",
+            )
+            self._volume_card.set_value(
+                format_bytes(completed.total_bytes),
+                f"Última análise concluída  ·  {completed.target_path}",
+            )
 
     # Estado do sistema --------------------------------------------------
 
@@ -122,7 +148,8 @@ class DashboardPage(QWidget):
             ("Qt / PySide6", f"{qVersion()} / {PySide6.__version__}"),
             (
                 "Operações em arquivos",
-                "Nenhuma habilitada. O aplicativo não lê, move nem exclui arquivos nesta versão.",
+                "Somente leitura. Análises são executadas apenas quando solicitadas; "
+                "nenhum arquivo é alterado, movido ou excluído.",
             ),
         ]
         box.addSpacing(4)
@@ -137,22 +164,15 @@ class DashboardPage(QWidget):
         heading = QHBoxLayout()
         heading.addWidget(label("Operações", "SectionTitle"))
         heading.addStretch(1)
-        heading.addWidget(badge("Indisponível", "unavailable"))
+        heading.addWidget(badge("Somente leitura", "ok"))
         box.addLayout(heading)
-        text = label(
-            "Nenhuma operação disponível nesta versão. Análise de armazenamento, "
-            "arquivos duplicados, comparação de pastas, fotografias semelhantes e "
-            "organização serão habilitadas em etapas futuras.",
-            "BodyText",
-            wrap=True,
-        )
-        text.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
-        box.addWidget(text)
+        for text in (
+            "Disponível: Analisar Armazenamento — varredura e indexação de pastas e "
+            "unidades selecionadas, sem alterar arquivos.",
+            "Indisponíveis nesta versão: arquivos duplicados, comparação de pastas, "
+            "fotografias semelhantes e organização.",
+        ):
+            line = label(text, "BodyText", wrap=True)
+            line.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+            box.addWidget(line)
         return frame
-
-
-def _format_timestamp(value: str) -> str:
-    try:
-        return datetime.fromisoformat(value).astimezone().strftime("%d/%m/%Y %H:%M")
-    except ValueError:
-        return value

@@ -27,6 +27,10 @@ MODULES = (
     "sysvar_organizer.persistence.database",
     "sysvar_organizer.persistence.repositories",
     "sysvar_organizer.engines.file_analysis",
+    "sysvar_organizer.engines.file_analysis.locations",
+    "sysvar_organizer.engines.file_analysis.models",
+    "sysvar_organizer.engines.file_analysis.scanner",
+    "sysvar_organizer.persistence.scan_store",
     "sysvar_organizer.engines.comparison",
     "sysvar_organizer.engines.visual_analysis",
     "sysvar_organizer.operations",
@@ -35,6 +39,10 @@ MODULES = (
     "sysvar_organizer.ui.main_window",
     "sysvar_organizer.ui.pages.dashboard",
     "sysvar_organizer.ui.pages.unavailable",
+    "sysvar_organizer.ui.pages.storage",
+    "sysvar_organizer.ui.formatting",
+    "sysvar_organizer.ui.drive_dialog",
+    "sysvar_organizer.ui.scan_worker",
 )
 
 

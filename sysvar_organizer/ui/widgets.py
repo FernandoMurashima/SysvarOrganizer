@@ -3,15 +3,68 @@
 from __future__ import annotations
 
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QResizeEvent
 from PySide6.QtWidgets import (
     QFrame,
     QGridLayout,
     QHBoxLayout,
     QLabel,
     QScrollArea,
+    QSizePolicy,
     QVBoxLayout,
     QWidget,
 )
+
+
+class MetricCard(QFrame):
+    """Cartão de indicador: título, valor e observação."""
+
+    def __init__(self, title: str, object_name: str = "Card", value_name: str = "MetricValue"):
+        super().__init__()
+        self.setObjectName(object_name)
+        box = QVBoxLayout(self)
+        if object_name == "Card":
+            box.setContentsMargins(20, 18, 20, 18)
+        else:
+            box.setContentsMargins(14, 12, 14, 12)
+        box.setSpacing(6)
+        box.addWidget(label(title, "CardTitle"))
+        self._value = label("—", value_name)
+        self._hint = label("", "MetricHint", wrap=True)
+        box.addWidget(self._value)
+        box.addWidget(self._hint)
+
+    def set_value(self, value: str, hint: str = "") -> None:
+        self._value.setText(value)
+        self._hint.setText(hint)
+
+
+class ElidedLabel(QLabel):
+    """Rótulo de uma linha que abrevia o texto no meio quando não cabe."""
+
+    def __init__(self, text: str = "", object_name: str | None = None) -> None:
+        super().__init__()
+        if object_name:
+            self.setObjectName(object_name)
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Preferred)
+        self._full_text = ""
+        self.set_full_text(text)
+
+    def set_full_text(self, text: str) -> None:
+        self._full_text = text
+        self.setToolTip(text)
+        self._refresh()
+
+    def resizeEvent(self, event: QResizeEvent) -> None:  # noqa: N802 - API do Qt
+        super().resizeEvent(event)
+        self._refresh()
+
+    def _refresh(self) -> None:
+        width = max(self.width(), 40)
+        elided = self.fontMetrics().elidedText(
+            self._full_text, Qt.TextElideMode.ElideMiddle, width
+        )
+        super().setText(elided)
 
 
 def label(text: str, object_name: str | None = None, *, wrap: bool = False) -> QLabel:

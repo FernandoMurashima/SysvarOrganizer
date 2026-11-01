@@ -53,6 +53,14 @@ def build_context() -> AppContext:
         )
 
     logger.info("Banco de dados pronto (esquema v%d)", version)
+    history = AnalysisHistoryRepository(database)
+    try:
+        interrupted = history.mark_interrupted()
+        if interrupted:
+            logger.warning("%d análise(s) interrompida(s) registrada(s) como falha", interrupted)
+    except DatabaseError:
+        logger.exception("Falha ao ajustar análises interrompidas")
+
     return AppContext(
         data_dir=paths.user_data_dir(),
         database_path=db_path,
@@ -60,5 +68,5 @@ def build_context() -> AppContext:
         database=database,
         schema_version=version,
         settings=SettingsRepository(database),
-        history=AnalysisHistoryRepository(database),
+        history=history,
     )

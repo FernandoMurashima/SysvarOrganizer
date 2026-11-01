@@ -24,6 +24,7 @@ from sysvar_organizer.config import settings as keys
 from sysvar_organizer.context import AppContext
 from sysvar_organizer.core.errors import DatabaseError
 from sysvar_organizer.ui.pages.dashboard import DashboardPage
+from sysvar_organizer.ui.pages.storage import StoragePage
 from sysvar_organizer.ui.pages.unavailable import UnavailablePage
 from sysvar_organizer.ui.widgets import label, scrollable_page
 
@@ -47,6 +48,7 @@ PAGES: tuple[PageSpec, ...] = (
         "storage",
         "Analisar Armazenamento",
         "Levantamento do uso de espaço em pastas e unidades escolhidas pelo usuário.",
+        available=True,
     ),
     PageSpec(
         "duplicates",
@@ -86,6 +88,8 @@ class MainWindow(QMainWindow):
         super().__init__()
         self._context = context
         self.persist_geometry = True
+        self._dashboard: DashboardPage | None = None
+        self._storage: StoragePage | None = None
 
         self.setWindowTitle(APP_NAME)
         self.setMinimumSize(960, 600)
@@ -107,6 +111,9 @@ class MainWindow(QMainWindow):
         for spec in PAGES:
             self._add_page(spec)
         self._nav.currentRowChanged.connect(self._stack.setCurrentIndex)
+        self._stack.currentChanged.connect(self._on_page_changed)
+        if self._dashboard is not None and self._storage is not None:
+            self._storage.analysis_finished.connect(self._dashboard.refresh)
         self._nav.setCurrentRow(0)
 
         self._build_status_bar()
@@ -151,7 +158,11 @@ class MainWindow(QMainWindow):
 
     def _create_page(self, spec: PageSpec) -> QWidget:
         if spec.key == "dashboard":
-            return DashboardPage(self._context)
+            self._dashboard = DashboardPage(self._context)
+            return self._dashboard
+        if spec.key == "storage":
+            self._storage = StoragePage(self._context)
+            return self._storage
         if spec.key == "settings":
             ctx = self._context
             return UnavailablePage(
@@ -176,6 +187,10 @@ class MainWindow(QMainWindow):
         bar.addPermanentWidget(QLabel(f"{APP_NAME} {__version__}"))
 
     # Navegação ----------------------------------------------------------
+
+    def _on_page_changed(self, index: int) -> None:
+        if self._dashboard is not None and PAGES[index].key == "dashboard":
+            self._dashboard.refresh()
 
     def current_page_key(self) -> str:
         item = self._nav.currentItem()
@@ -206,5 +221,8 @@ class MainWindow(QMainWindow):
             logger.exception("Falha ao gravar a geometria da janela")
 
     def closeEvent(self, event: QCloseEvent) -> None:  # noqa: N802 - API do Qt
+        if self._storage is not None and not self._storage.request_shutdown():
+            event.ignore()
+            return
         self._save_geometry()
         super().closeEvent(event)

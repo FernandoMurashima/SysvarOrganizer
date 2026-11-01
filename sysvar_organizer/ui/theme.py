@@ -128,6 +128,79 @@ QLabel {
     color: #991B1B;
 }
 
+/* Indicadores compactos (página Analisar Armazenamento) */
+#Tile {
+    background: #F9FAFB;
+    border: 1px solid #E5E7EB;
+    border-radius: 8px;
+}
+#TileValue {
+    color: #111827;
+    font-size: 18px;
+    font-weight: 600;
+}
+
+/* Botões */
+QPushButton {
+    background: #FFFFFF;
+    color: #1F2937;
+    border: 1px solid #D1D5DB;
+    border-radius: 6px;
+    padding: 7px 16px;
+}
+QPushButton:hover {
+    background: #F3F4F6;
+}
+QPushButton:disabled {
+    background: #F9FAFB;
+    color: #9CA3AF;
+    border-color: #E5E7EB;
+}
+#PrimaryButton {
+    background: #2563EB;
+    color: #FFFFFF;
+    border: 1px solid #2563EB;
+    font-weight: 600;
+}
+#PrimaryButton:hover {
+    background: #1D4ED8;
+}
+#PrimaryButton:disabled {
+    background: #BFDBFE;
+    border-color: #BFDBFE;
+    color: #FFFFFF;
+}
+
+/* Listas de locais */
+#LocationList {
+    background: #FFFFFF;
+    border: 1px solid #E5E7EB;
+    border-radius: 8px;
+    color: #1F2937;
+    outline: 0;
+}
+#LocationList::item {
+    padding: 6px 8px;
+}
+#LocationList::item:selected {
+    background: #DBEAFE;
+    color: #1E3A8A;
+}
+
+QProgressBar {
+    background: #E5E7EB;
+    border: none;
+    border-radius: 3px;
+}
+QProgressBar::chunk {
+    background: #2563EB;
+    border-radius: 3px;
+}
+
+QDialog {
+    background: #FFFFFF;
+}
+
 QScrollArea {
     background: transparent;
     border: none;
