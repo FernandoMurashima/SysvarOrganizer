@@ -318,6 +318,101 @@ MIGRATIONS: list[tuple[int, tuple[str, ...]]] = [
             """,
         ),
     ),
+    (
+        # Bloco 05 - fotografias semelhantes (assinaturas perceptuais). Somente acréscimos.
+        5,
+        (
+            """
+            CREATE TABLE image_signatures (
+                path_key    TEXT PRIMARY KEY NOT NULL,
+                size_bytes  INTEGER NOT NULL,
+                modified_ns INTEGER NOT NULL,
+                volume_id   TEXT NOT NULL,
+                file_index  TEXT NOT NULL,
+                version     TEXT NOT NULL,
+                phash       TEXT NOT NULL,
+                dhash       TEXT NOT NULL,
+                width       INTEGER NOT NULL,
+                height      INTEGER NOT NULL,
+                format      TEXT NOT NULL,
+                computed_at TEXT NOT NULL
+            )
+            """,
+            """
+            CREATE TABLE visual_searches (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                analysis_id      INTEGER NOT NULL REFERENCES analysis_history (id),
+                root             TEXT NOT NULL,
+                status           TEXT NOT NULL
+                                 CHECK (status IN ('running', 'completed', 'cancelled', 'failed')),
+                started_at       TEXT NOT NULL,
+                finished_at      TEXT,
+                criteria         TEXT NOT NULL,
+                candidates_count INTEGER NOT NULL DEFAULT 0,
+                processed_count  INTEGER NOT NULL DEFAULT 0,
+                computed_count   INTEGER NOT NULL DEFAULT 0,
+                reused_count     INTEGER NOT NULL DEFAULT 0,
+                skipped_count    INTEGER NOT NULL DEFAULT 0,
+                pairs_count      INTEGER,
+                groups_count     INTEGER,
+                grouped_images   INTEGER,
+                exact_groups     INTEGER,
+                very_high_groups INTEGER,
+                probable_groups  INTEGER,
+                uncertain_groups INTEGER,
+                elapsed_seconds  REAL,
+                error_message    TEXT
+            )
+            """,
+            """
+            CREATE TABLE visual_images (
+                id               INTEGER PRIMARY KEY AUTOINCREMENT,
+                search_id        INTEGER NOT NULL REFERENCES visual_searches (id),
+                file_id          INTEGER NOT NULL REFERENCES indexed_files (id),
+                status           TEXT NOT NULL CHECK (status IN ('pending', 'ok', 'skipped')),
+                phash            TEXT,
+                dhash            TEXT,
+                width            INTEGER,
+                height           INTEGER,
+                format           TEXT,
+                signature_reused INTEGER NOT NULL DEFAULT 0,
+                physical_key     TEXT,
+                issue_kind       TEXT,
+                issue_message    TEXT
+            )
+            """,
+            "CREATE INDEX idx_visual_images_search ON visual_images (search_id, status)",
+            """
+            CREATE TABLE visual_groups (
+                id                   INTEGER PRIMARY KEY AUTOINCREMENT,
+                search_id            INTEGER NOT NULL REFERENCES visual_searches (id),
+                band                 TEXT NOT NULL
+                                     CHECK (band IN ('exact', 'very_high', 'probable', 'uncertain')),
+                members_count        INTEGER NOT NULL,
+                max_phash_distance   INTEGER NOT NULL,
+                max_dhash_distance   INTEGER NOT NULL,
+                exact_members        INTEGER NOT NULL DEFAULT 0,
+                representative_id    INTEGER REFERENCES visual_images (id)
+            )
+            """,
+            "CREATE INDEX idx_visual_groups_search ON visual_groups (search_id, band)",
+            """
+            CREATE TABLE visual_group_members (
+                id             INTEGER PRIMARY KEY AUTOINCREMENT,
+                group_id       INTEGER NOT NULL REFERENCES visual_groups (id),
+                search_id      INTEGER NOT NULL REFERENCES visual_searches (id),
+                image_id       INTEGER NOT NULL REFERENCES visual_images (id),
+                position       INTEGER NOT NULL,
+                phash_distance INTEGER NOT NULL,
+                dhash_distance INTEGER NOT NULL,
+                sha256         TEXT,
+                is_exact_copy  INTEGER NOT NULL DEFAULT 0,
+                same_physical  INTEGER NOT NULL DEFAULT 0
+            )
+            """,
+            "CREATE INDEX idx_visual_group_members_group ON visual_group_members (group_id)",
+        ),
+    ),
 ]
 
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1][0]

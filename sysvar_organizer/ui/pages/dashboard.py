@@ -65,6 +65,9 @@ class DashboardPage(QWidget):
         self._cmp_different_card = MetricCard("DIFERENTES (COMPARAÇÃO)")
         self._cmp_exclusive_card = MetricCard("EXCLUSIVOS (COMPARAÇÃO)")
         self._cmp_shared_card = MetricCard("VOLUME LÓGICO COMPARTILHADO")
+        self._photo_groups_card = MetricCard("GRUPOS DE FOTOGRAFIAS SEMELHANTES")
+        self._photo_images_card = MetricCard("FOTOGRAFIAS ENVOLVIDAS")
+        self._photo_date_card = MetricCard("ÚLTIMA ANÁLISE VISUAL")
 
         # Grade de 6 colunas: 3 cartões na primeira linha, 2 na segunda
         # (armazenamento) e 3 na terceira (duplicados exatos).
@@ -84,6 +87,9 @@ class DashboardPage(QWidget):
         grid.addWidget(self._cmp_different_card, 3, 4, 1, 2)
         grid.addWidget(self._cmp_exclusive_card, 4, 0, 1, 3)
         grid.addWidget(self._cmp_shared_card, 4, 3, 1, 3)
+        grid.addWidget(self._photo_groups_card, 5, 0, 1, 2)
+        grid.addWidget(self._photo_images_card, 5, 2, 1, 2)
+        grid.addWidget(self._photo_date_card, 5, 4, 1, 2)
         for column in range(6):
             grid.setColumnStretch(column, 1)
         return grid
@@ -92,6 +98,7 @@ class DashboardPage(QWidget):
         """Atualiza os indicadores a partir do banco local."""
         self._refresh_duplicates()
         self._refresh_comparison()
+        self._refresh_photos()
         if self._context.database_ok:
             self._database_card.set_value(
                 "Operacional", f"Esquema versão {self._context.schema_version}"
@@ -211,6 +218,32 @@ class DashboardPage(QWidget):
             f"{format_count(record.shared_contents)} conteúdos presentes nos dois lados",
         )
 
+    def _refresh_photos(self) -> None:
+        cards = (self._photo_groups_card, self._photo_images_card, self._photo_date_card)
+        repo = self._context.visuals
+        record = None
+        unavailable = "Histórico indisponível"
+        if repo is not None:
+            try:
+                record = repo.latest_completed()
+                unavailable = "Nenhuma análise visual concluída"
+            except DatabaseError:
+                logger.exception("Falha ao consultar a última análise visual")
+        if record is None:
+            for metric in cards:
+                metric.set_value("—", unavailable)
+            return
+        self._photo_groups_card.set_value(
+            format_count(record.groups_count),
+            f"Semelhança visual, não duplicidade exata  ·  {format_count(record.exact_groups)} "
+            "só com cópias exatas",
+        )
+        self._photo_images_card.set_value(
+            format_count(record.grouped_images),
+            f"{format_count(record.uncertain_groups)} grupo(s) incerto(s) para revisão",
+        )
+        self._photo_date_card.set_value(format_timestamp(record.started_at), record.root)
+
     # Estado do sistema --------------------------------------------------
 
     def _build_system_state(self) -> QWidget:
@@ -264,7 +297,9 @@ class DashboardPage(QWidget):
             "SHA-256, somente para consulta.",
             "Disponível: Comparar Pastas — comparação informativa entre duas pastas "
             "indexadas, sem sincronizar, copiar ou mover arquivos.",
-            "Indisponíveis nesta versão: fotografias semelhantes e organização.",
+            "Disponível: Fotografias Semelhantes — semelhança visual por assinatura "
+            "perceptual, somente para consulta.",
+            "Indisponível nesta versão: organização.",
         ):
             line = label(text, "BodyText", wrap=True)
             line.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)

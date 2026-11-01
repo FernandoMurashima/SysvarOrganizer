@@ -36,6 +36,13 @@ MODULES = (
     "sysvar_organizer.engines.comparison.duplicates",
     "sysvar_organizer.engines.comparison.hashing",
     "sysvar_organizer.engines.comparison.folders",
+    "sysvar_organizer.engines.visual_analysis",
+    "sysvar_organizer.engines.visual_analysis.models",
+    "sysvar_organizer.engines.visual_analysis.signatures",
+    "sysvar_organizer.engines.visual_analysis.grouping",
+    "sysvar_organizer.engines.visual_analysis.similar",
+    "sysvar_organizer.persistence.visual_store",
+    "sysvar_organizer.persistence.visual_repository",
     "sysvar_organizer.persistence.hash_cache",
     "sysvar_organizer.persistence.comparison_store",
     "sysvar_organizer.persistence.comparison_repository",
@@ -56,6 +63,9 @@ MODULES = (
     "sysvar_organizer.ui.duplicate_worker",
     "sysvar_organizer.ui.pages.compare",
     "sysvar_organizer.ui.comparison_worker",
+    "sysvar_organizer.ui.pages.photos",
+    "sysvar_organizer.ui.visual_worker",
+    "sysvar_organizer.ui.thumbnails",
 )
 
 
@@ -71,6 +81,16 @@ def run_self_check(app: QApplication, window: MainWindow, context: AppContext) -
             failed.append(f"{name} ({exc.__class__.__name__})")
     results.append(
         ("Importação dos módulos", not failed, ", ".join(failed) or f"{len(MODULES)} módulos")
+    )
+
+    from sysvar_organizer.engines.visual_analysis.signatures import (
+        PILLOW_VERSION,
+        dependencies_error,
+    )
+
+    missing = dependencies_error()
+    results.append(
+        ("Bibliotecas de imagem (Pillow e numpy)", missing is None, missing or f"Pillow {PILLOW_VERSION}")
     )
 
     window.showNormal()

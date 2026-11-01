@@ -561,8 +561,8 @@ class ComparePage(QWidget):
             QMessageBox.information(
                 self,
                 APP_NAME,
-                "Há outra tarefa em andamento (análise de armazenamento ou busca de "
-                "duplicados). Aguarde a conclusão para comparar pastas.",
+                "Há outra tarefa em andamento. Aguarde a conclusão para comparar "
+                "pastas.",
             )
             return
         if warning:

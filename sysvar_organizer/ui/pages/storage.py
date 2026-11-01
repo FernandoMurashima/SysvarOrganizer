@@ -266,8 +266,8 @@ class StoragePage(QWidget):
             QMessageBox.information(
                 self,
                 APP_NAME,
-                "Há outra tarefa em andamento (busca de duplicados ou comparação de "
-                "pastas). Aguarde a conclusão para iniciar uma nova análise.",
+                "Há outra tarefa em andamento. Aguarde a conclusão para iniciar uma "
+                "nova análise.",
             )
             return
 

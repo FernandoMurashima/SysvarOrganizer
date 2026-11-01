@@ -9,6 +9,8 @@ description = "Sysvar Organizer - organizador de arquivos para Windows (OIA-001)
 requires-python = ">=3.11,<3.14"
 dependencies = [
     "PySide6>=6.8,<7",
+    "Pillow>=10.3,<13",
+    "numpy>=1.26,<3",
 ]
 
 [project.gui-scripts]
