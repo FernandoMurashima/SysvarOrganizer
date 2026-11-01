@@ -313,6 +313,22 @@ class OperationsStore:
             ).fetchall()
         return {r[0]: int(r[1]) for r in rows}
 
+    def state_counts_for(self, plan_ids: Sequence[int]) -> dict[int, dict[str, int]]:
+        """Contagem por estado de vários planos numa única consulta."""
+        result: dict[int, dict[str, int]] = {plan_id: {} for plan_id in plan_ids}
+        if not plan_ids:
+            return result
+        marks = ", ".join("?" for _ in plan_ids)
+        with self._db.connection() as conn:
+            rows = conn.execute(
+                f"SELECT plan_id, state, COUNT(*) FROM operation_items WHERE plan_id IN ({marks}) "
+                "GROUP BY plan_id, state",
+                tuple(plan_ids),
+            ).fetchall()
+        for plan_id, state, count in rows:
+            result[plan_id][state] = int(count)
+        return result
+
     def approved_count(self, plan_id: int) -> int:
         with self._db.connection() as conn:
             return int(

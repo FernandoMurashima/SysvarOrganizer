@@ -2,17 +2,28 @@
 
 A versão do esquema é mantida em ``PRAGMA user_version``. Cada migração é
 aplicada em uma transação própria, junto com a atualização da versão.
+
+O arquivo do banco nunca é apagado, recriado ou substituído automaticamente:
+banco inacessível, danificado ou de versão mais recente é apenas relatado, e o
+aplicativo segue sem persistência, preservando o arquivo como está.
 """
 
 from __future__ import annotations
 
 import logging
 import sqlite3
+import time
 from collections.abc import Iterator
 from contextlib import contextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
-from sysvar_organizer.core.errors import DatabaseError
+from sysvar_organizer.core.errors import (
+    DatabaseCorrupted,
+    DatabaseError,
+    DatabaseInaccessible,
+    SchemaIncompatible,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -611,6 +622,102 @@ MIGRATIONS: list[tuple[int, tuple[str, ...]]] = [
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1][0]
 
 
+MESSAGE_CORRUPTED = (
+    "O arquivo do banco de dados local está danificado ou não é um banco SQLite válido. "
+    "O arquivo foi preservado sem alterações."
+)
+MESSAGE_INACCESSIBLE = (
+    "Não foi possível acessar o arquivo do banco de dados local (permissão, bloqueio por "
+    "outro programa ou local indisponível). O arquivo foi preservado sem alterações."
+)
+_CORRUPTION_MARKERS = ("not a database", "malformed", "corrupt", "file is encrypted")
+_ACCESS_MARKERS = (
+    "unable to open",
+    "readonly",
+    "read-only",
+    "locked",
+    "disk i/o",
+    "permission",
+    "access",
+    "cannot open",
+)
+MAX_INTEGRITY_PROBLEMS = 20
+
+
+def classify_error(exc: BaseException, message: str) -> DatabaseError:
+    """Converte uma falha do SQLite/sistema na categoria de erro adequada."""
+    text = str(exc).lower()
+    if any(marker in text for marker in _CORRUPTION_MARKERS):
+        return DatabaseCorrupted(MESSAGE_CORRUPTED)
+    if isinstance(exc, OSError) or any(marker in text for marker in _ACCESS_MARKERS):
+        return DatabaseInaccessible(MESSAGE_INACCESSIBLE)
+    return DatabaseError(message)
+
+
+@dataclass(frozen=True)
+class IntegrityResult:
+    """Resultado de uma verificação de integridade (somente leitura)."""
+
+    status: str  # ok | problems | corrupted | inaccessible | missing
+    full: bool
+    problems: tuple[str, ...]
+    foreign_key_issues: int
+    schema_version: int | None
+    elapsed_seconds: float
+
+    @property
+    def ok(self) -> bool:
+        return self.status == "ok"
+
+
+def check_integrity(path: Path, full: bool = False) -> IntegrityResult:
+    """Verifica a integridade do banco SEM alterá-lo (conexão somente leitura).
+
+    ``full=False`` usa ``quick_check``; ``full=True`` usa ``integrity_check``.
+    Também confere referências entre tabelas (``foreign_key_check``).
+    """
+    started = time.monotonic()
+
+    def result(status: str, problems=(), fk: int = 0, version: int | None = None):
+        return IntegrityResult(
+            status, full, tuple(problems), fk, version, round(time.monotonic() - started, 3)
+        )
+
+    if not path.is_file():
+        return result("missing", ("O arquivo do banco de dados não existe.",))
+    try:
+        uri = path.resolve().as_uri() + "?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, timeout=5)
+    except (OSError, sqlite3.Error):
+        return result("inaccessible", (MESSAGE_INACCESSIBLE,))
+    try:
+        version = _user_version(conn)
+        pragma = "integrity_check" if full else "quick_check"
+        rows = conn.execute(f"PRAGMA {pragma}({MAX_INTEGRITY_PROBLEMS})").fetchall()
+        problems = [str(r[0]) for r in rows if str(r[0]).lower() != "ok"]
+        fk = 0
+        for _row in conn.execute("PRAGMA foreign_key_check"):
+            fk += 1
+            if fk >= 1000:
+                break
+        if problems:
+            return result("problems", problems, fk, version)
+        if fk:
+            return result(
+                "problems",
+                (f"{fk} registro(s) com referência inexistente entre tabelas.",),
+                fk,
+                version,
+            )
+        return result("ok", (), 0, version)
+    except sqlite3.Error as exc:
+        error = classify_error(exc, "Falha ao verificar o banco de dados local.")
+        status = "corrupted" if isinstance(error, DatabaseCorrupted) else "inaccessible"
+        return result(status, (str(error),))
+    finally:
+        conn.close()
+
+
 class Database:
     def __init__(self, path: Path) -> None:
         self.path = path
@@ -620,17 +727,25 @@ class Database:
 
         Retorna a versão do esquema após a inicialização.
         """
+        if self.path.exists() and not self.path.is_file():
+            raise DatabaseInaccessible(MESSAGE_INACCESSIBLE)
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             conn = sqlite3.connect(self.path, timeout=5, isolation_level=None)
         except (OSError, sqlite3.Error) as exc:
-            raise DatabaseError("Não foi possível abrir o banco de dados local.") from exc
+            raise classify_error(exc, "Não foi possível abrir o banco de dados local.") from exc
 
         try:
             current = _user_version(conn)
             if current > LATEST_SCHEMA_VERSION:
-                raise DatabaseError(
-                    "O banco de dados foi criado por uma versão mais recente do aplicativo."
+                raise SchemaIncompatible(
+                    "O banco de dados foi criado por uma versão mais recente do aplicativo "
+                    f"(esquema v{current}; esta versão reconhece até a v{LATEST_SCHEMA_VERSION}). "
+                    "O arquivo foi preservado sem alterações."
+                )
+            if current < LATEST_SCHEMA_VERSION:
+                logger.info(
+                    "Migração do esquema necessária: v%d -> v%d", current, LATEST_SCHEMA_VERSION
                 )
             for version, statements in MIGRATIONS:
                 if version <= current:
@@ -648,9 +763,12 @@ class Database:
                 current = version
             return current
         except sqlite3.Error as exc:
-            raise DatabaseError("Falha ao preparar o esquema do banco de dados.") from exc
+            raise classify_error(exc, "Falha ao preparar o esquema do banco de dados.") from exc
         finally:
             conn.close()
+
+    def check_integrity(self, full: bool = False) -> IntegrityResult:
+        return check_integrity(self.path, full)
 
     def schema_version(self) -> int:
         with self.connection() as conn:
@@ -660,13 +778,17 @@ class Database:
         """Abre uma conexão configurada. Quem abre é responsável por fechar.
 
         Usada por gravações longas (varredura), na própria thread que grava.
+        Nunca cria o arquivo: se o banco tiver sido removido ou ficado
+        indisponível depois da inicialização, a falha é relatada em vez de um
+        banco vazio ser criado silenciosamente no lugar.
         """
         try:
-            conn = sqlite3.connect(self.path, timeout=15)
+            uri = self.path.resolve().as_uri() + "?mode=rw"
+            conn = sqlite3.connect(uri, uri=True, timeout=15)
             conn.row_factory = sqlite3.Row
             conn.execute("PRAGMA foreign_keys = ON")
-        except sqlite3.Error as exc:
-            raise DatabaseError("Não foi possível abrir o banco de dados local.") from exc
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            raise classify_error(exc, "Não foi possível abrir o banco de dados local.") from exc
         return conn
 
     @contextmanager
@@ -677,10 +799,10 @@ class Database:
             yield conn
             conn.commit()
         except sqlite3.Error as exc:
-            conn.rollback()
-            raise DatabaseError("Falha ao acessar o banco de dados local.") from exc
+            _safe_rollback(conn)
+            raise classify_error(exc, "Falha ao acessar o banco de dados local.") from exc
         except Exception:
-            conn.rollback()
+            _safe_rollback(conn)
             raise
         finally:
             conn.close()
@@ -688,3 +810,11 @@ class Database:
 
 def _user_version(conn: sqlite3.Connection) -> int:
     return int(conn.execute("PRAGMA user_version").fetchone()[0])
+
+
+def _safe_rollback(conn: sqlite3.Connection) -> None:
+    """Desfaz a transação; uma falha aqui não pode encobrir o erro original."""
+    try:
+        conn.rollback()
+    except sqlite3.Error:
+        logger.warning("Falha ao desfazer transação após erro do banco")

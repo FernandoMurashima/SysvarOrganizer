@@ -138,8 +138,9 @@ class DuplicateFinder:
         self._current_path = ""
         self._emit(force=True)
         logger.info(
-            "Busca de duplicados encerrada: estado=%s candidatos=%d lidos=%d reaproveitados=%d "
+            "Busca de duplicados encerrada: id=%s estado=%s candidatos=%d lidos=%d reaproveitados=%d "
             "ignorados=%d bytes_lidos=%d grupos=%s tempo=%.1fs",
+            self._store.search_id,
             status,
             self._candidates,
             self._read_count,

@@ -15,7 +15,31 @@ class OrganizerError(Exception):
 
 
 class DatabaseError(OrganizerError):
-    """Falha ao inicializar ou acessar o banco de dados local."""
+    """Falha ao inicializar ou acessar o banco de dados local.
+
+    ``category`` identifica o tipo de falha para logs e mensagens, sem expor
+    caminhos ou conteúdo.
+    """
+
+    category = "unavailable"
+
+
+class DatabaseInaccessible(DatabaseError):
+    """O arquivo do banco não pode ser aberto (permissão, bloqueio, caminho)."""
+
+    category = "inaccessible"
+
+
+class DatabaseCorrupted(DatabaseError):
+    """O arquivo existe, mas não é um banco SQLite válido ou está danificado."""
+
+    category = "corrupted"
+
+
+class SchemaIncompatible(DatabaseError):
+    """O banco foi criado por uma versão mais recente do aplicativo."""
+
+    category = "incompatible"
 
 
 ErrorNotifier = Callable[[str], None]

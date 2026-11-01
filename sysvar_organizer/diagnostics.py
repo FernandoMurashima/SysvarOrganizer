@@ -65,6 +65,11 @@ MODULES = (
     "sysvar_organizer.operations.executor",
     "sysvar_organizer.persistence.operations_store",
     "sysvar_organizer.persistence.history_repository",
+    "sysvar_organizer.reports",
+    "sysvar_organizer.reports.values",
+    "sysvar_organizer.reports.model",
+    "sysvar_organizer.reports.catalog",
+    "sysvar_organizer.reports.export",
     "sysvar_organizer.ui.theme",
     "sysvar_organizer.ui.widgets",
     "sysvar_organizer.ui.main_window",
@@ -85,10 +90,13 @@ MODULES = (
     "sysvar_organizer.ui.organization_worker",
     "sysvar_organizer.ui.pages.operations_review",
     "sysvar_organizer.ui.pages.history",
+    "sysvar_organizer.ui.background",
 )
 
 
-def run_self_check(app: QApplication, window: MainWindow, context: AppContext) -> int:
+def run_self_check(
+    app: QApplication, window: MainWindow, context: AppContext, exclusive: bool = True
+) -> int:
     window.persist_geometry = False
     results: list[tuple[str, bool, str]] = []
 
@@ -156,6 +164,20 @@ def run_self_check(app: QApplication, window: MainWindow, context: AppContext) -
                     f"{context.database_path} (esquema v{version}, {total} análises)",
                 )
             )
+
+    if context.database is not None:
+        integrity = context.database.check_integrity(full=False)
+        detail = (
+            f"verificação rápida em {integrity.elapsed_seconds:.1f} s".replace(".", ",")
+            if integrity.ok
+            else "; ".join(integrity.problems[:3])
+        )
+        results.append(("Integridade do banco", integrity.ok, detail))
+    if not exclusive:
+        print(
+            "[AVISO] Outra instância do aplicativo está aberta: estados em andamento "
+            "não foram alterados por esta verificação."
+        )
 
     window.close()
     app.processEvents()

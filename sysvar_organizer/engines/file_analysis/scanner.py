@@ -196,8 +196,9 @@ class StorageScanner:
 
         self._emit(force=True)
         logger.info(
-            "Varredura encerrada: estado=%s arquivos=%d pastas=%d bytes=%d "
+            "Varredura encerrada: id=%s estado=%s arquivos=%d pastas=%d bytes=%d "
             "inacessiveis=%d ignorados=%d tempo=%.1fs",
+            self._store.analysis_id,
             status,
             total.files,
             total.folders,

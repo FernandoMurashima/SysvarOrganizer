@@ -164,8 +164,9 @@ class SimilarityFinder:
         self._current_path = ""
         self._emit(force=True)
         logger.info(
-            "Busca visual encerrada: estado=%s candidatas=%d calculadas=%d reaproveitadas=%d "
+            "Busca visual encerrada: id=%s estado=%s candidatas=%d calculadas=%d reaproveitadas=%d "
             "ignoradas=%d grupos=%s tempo=%.1fs",
+            self._store.search_id,
             status,
             self._candidates,
             self._computed,

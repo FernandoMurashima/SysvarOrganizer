@@ -4,14 +4,24 @@ from __future__ import annotations
 
 import logging
 import platform
+from collections.abc import Callable
 
 import PySide6
 from PySide6.QtCore import Qt, qVersion
-from PySide6.QtWidgets import QGridLayout, QHBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QCheckBox,
+    QGridLayout,
+    QHBoxLayout,
+    QMessageBox,
+    QPushButton,
+    QWidget,
+)
 
 from sysvar_organizer import APP_NAME, PROJECT_CODE, __version__
 from sysvar_organizer.context import AppContext
 from sysvar_organizer.core.errors import DatabaseError
+from sysvar_organizer.persistence.database import IntegrityResult, check_integrity
+from sysvar_organizer.ui.background import BackgroundTask
 from sysvar_organizer.ui.formatting import (
     format_bytes,
     format_count,
@@ -35,6 +45,8 @@ class DashboardPage(QWidget):
     def __init__(self, context: AppContext) -> None:
         super().__init__()
         self._context = context
+        self._busy_check: Callable[[], bool] | None = None
+        self._integrity = BackgroundTask(self)
 
         layout = page_layout(self)
         layout.addWidget(
@@ -325,7 +337,79 @@ class DashboardPage(QWidget):
         ]
         box.addSpacing(4)
         box.addLayout(field_grid(rows))
+
+        box.addSpacing(6)
+        check = QHBoxLayout()
+        self._integrity_button = QPushButton("Verificar integridade do banco")
+        self._integrity_button.clicked.connect(self._check_integrity)
+        self._integrity_full = QCheckBox("Verificação completa (mais demorada)")
+        check.addWidget(self._integrity_button)
+        check.addWidget(self._integrity_full)
+        check.addStretch(1)
+        box.addLayout(check)
+        self._integrity_label = label(
+            "Somente leitura: a verificação não altera, repara nem recria o banco.",
+            "MetricHint",
+            wrap=True,
+        )
+        box.addWidget(self._integrity_label)
         return frame
+
+    # Verificação de integridade -------------------------------------------
+
+    def set_busy_check(self, check: Callable[[], bool]) -> None:
+        self._busy_check = check
+
+    def is_running(self) -> bool:
+        return self._integrity.is_running()
+
+    def request_shutdown(self) -> bool:
+        if self.is_running() and not self._integrity.wait(15000):
+            logger.warning("A verificação de integridade não terminou no tempo de espera")
+        return True
+
+    def _check_integrity(self) -> None:
+        if self.is_running():
+            return
+        if self._busy_check is not None and self._busy_check():
+            QMessageBox.information(
+                self, APP_NAME, "Há outra tarefa em andamento. Aguarde a conclusão para verificar."
+            )
+            return
+        path, full = self._context.database_path, self._integrity_full.isChecked()
+        self._integrity_button.setEnabled(False)
+        self._integrity_label.setText("Verificando o banco de dados (somente leitura)…")
+        self._integrity.start(
+            lambda _cancel, _progress: check_integrity(path, full),
+            self._on_integrity_finished,
+            on_done=lambda: self._integrity_button.setEnabled(True),
+        )
+
+    def _on_integrity_finished(self, result: IntegrityResult | None, error) -> None:
+        if error is not None or result is None:
+            logger.error("Falha na verificação de integridade", exc_info=error)
+            self._integrity_label.setText("Não foi possível concluir a verificação. Detalhes no log.")
+            return
+        mode = "completa" if result.full else "rápida"
+        logger.info(
+            "Verificação de integridade: modo=%s situacao=%s problemas=%d referencias=%d tempo=%.2fs",
+            mode,
+            result.status,
+            len(result.problems),
+            result.foreign_key_issues,
+            result.elapsed_seconds,
+        )
+        if result.ok:
+            text = (
+                f"Verificação {mode} concluída sem problemas (esquema v{result.schema_version})."
+            )
+        else:
+            text = (
+                f"Verificação {mode}: problemas encontrados. "
+                + "; ".join(result.problems[:5])
+                + " O arquivo não foi alterado; guarde uma cópia antes de qualquer recuperação."
+            )
+        self._integrity_label.setText(text)
 
     # Operações ----------------------------------------------------------
 

@@ -39,20 +39,27 @@ class AppContext:
     organizations: OrganizationRepository | None = None
     operations: OperationsStore | None = None
     history_log: HistoryRepository | None = None
+    database_error_category: str | None = None
+    startup_notes: tuple[str, ...] = ()
 
     @property
     def database_ok(self) -> bool:
         return self.database is not None
 
 
-def build_context() -> AppContext:
-    """Inicializa o banco local. Em caso de falha, o aplicativo segue sem persistência."""
+def build_context(recover_interrupted: bool = True) -> AppContext:
+    """Inicializa o banco local. Em caso de falha, o aplicativo segue sem persistência.
+
+    ``recover_interrupted=False`` não altera registros de atividades em
+    andamento (usado quando outra instância do aplicativo está aberta).
+    O arquivo do banco nunca é apagado ou recriado aqui.
+    """
     db_path = paths.database_path()
     database = Database(db_path)
     try:
         version = database.initialize()
     except DatabaseError as exc:
-        logger.exception("Banco de dados indisponível")
+        logger.error("Banco de dados indisponível (categoria=%s)", exc.category, exc_info=True)
         return AppContext(
             data_dir=paths.user_data_dir(),
             database_path=db_path,
@@ -62,64 +69,41 @@ def build_context() -> AppContext:
             settings=None,
             history=None,
             database_error=str(exc),
+            database_error_category=exc.category,
         )
 
     logger.info("Banco de dados pronto (esquema v%d)", version)
     history = AnalysisHistoryRepository(database)
-    try:
-        interrupted = history.mark_interrupted()
-        if interrupted:
-            logger.warning("%d análise(s) interrompida(s) registrada(s) como falha", interrupted)
-    except DatabaseError:
-        logger.exception("Falha ao ajustar análises interrompidas")
     duplicates = DuplicateRepository(database)
-    try:
-        interrupted = duplicates.mark_interrupted()
-        if interrupted:
-            logger.warning(
-                "%d busca(s) de duplicados interrompida(s) registrada(s) como falha", interrupted
-            )
-    except DatabaseError:
-        logger.exception("Falha ao ajustar buscas de duplicados interrompidas")
     comparisons = ComparisonRepository(database)
-    try:
-        interrupted = comparisons.mark_interrupted()
-        if interrupted:
-            logger.warning(
-                "%d comparação(ões) de pastas interrompida(s) registrada(s) como falha",
-                interrupted,
-            )
-    except DatabaseError:
-        logger.exception("Falha ao ajustar comparações interrompidas")
     visuals = VisualRepository(database)
-    try:
-        interrupted = visuals.mark_interrupted()
-        if interrupted:
-            logger.warning(
-                "%d busca(s) de fotografias interrompida(s) registrada(s) como falha",
-                interrupted,
-            )
-    except DatabaseError:
-        logger.exception("Falha ao ajustar buscas de fotografias interrompidas")
     organizations = OrganizationRepository(database)
-    try:
-        interrupted = organizations.mark_interrupted()
-        if interrupted:
-            logger.warning(
-                "%d simulação(ões) de organização interrompida(s) registrada(s) como falha",
-                interrupted,
-            )
-    except DatabaseError:
-        logger.exception("Falha ao ajustar simulações interrompidas")
     operations = OperationsStore(database)
-    try:
-        interrupted = operations.mark_interrupted()
-        if interrupted:
-            logger.warning(
-                "%d ação(ões) de operação interrompida(s); reconciliação obrigatória", interrupted
-            )
-    except DatabaseError:
-        logger.exception("Falha ao registrar operações interrompidas")
+
+    notes: list[str] = []
+    if recover_interrupted:
+        for repository, text in (
+            (history, "análise(s) de armazenamento interrompida(s) registrada(s) como falha"),
+            (duplicates, "busca(s) de duplicados interrompida(s) registrada(s) como falha"),
+            (comparisons, "comparação(ões) de pastas interrompida(s) registrada(s) como falha"),
+            (visuals, "busca(s) de fotografias interrompida(s) registrada(s) como falha"),
+            (organizations, "simulação(ões) de organização interrompida(s) registrada(s) como falha"),
+            (operations, "ação(ões) de operação interrompida(s); reconciliação obrigatória"),
+        ):
+            try:
+                count = repository.mark_interrupted()
+            except DatabaseError as exc:
+                logger.error(
+                    "Falha ao ajustar estados interrompidos (%s, categoria=%s)",
+                    type(repository).__name__,
+                    exc.category,
+                )
+                continue
+            if count:
+                logger.warning("%d %s", count, text)
+                notes.append(f"{count} {text}")
+    else:
+        logger.warning("Outra instância aberta: estados em andamento não foram alterados")
 
     return AppContext(
         data_dir=paths.user_data_dir(),
@@ -135,4 +119,5 @@ def build_context() -> AppContext:
         organizations=organizations,
         operations=operations,
         history_log=HistoryRepository(database),
+        startup_notes=tuple(notes),
     )

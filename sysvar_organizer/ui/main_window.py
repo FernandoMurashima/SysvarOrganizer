@@ -222,11 +222,21 @@ class MainWindow(QMainWindow):
     def _connect_tasks(self) -> None:
         storage, duplicates = self._storage, self._duplicates
         compare, photos, organization = self._compare, self._photos, self._organization
-        tasks = (storage, duplicates, compare, photos, organization)
+        tasks = (
+            storage,
+            duplicates,
+            compare,
+            photos,
+            organization,
+            self._history,
+            self._dashboard,
+        )
         if any(task is None for task in tasks):
             return
-        # Uma tarefa por vez: varredura, duplicados, comparação, análise visual e
-        # simulação de organização nunca são executadas simultaneamente.
+        # Uma tarefa por vez: varredura, duplicados, comparação, análise visual,
+        # simulação de organização, exportação de relatório e verificação de
+        # integridade nunca são executadas simultaneamente (leituras longas não
+        # disputam o banco com gravações em andamento).
         for task in tasks:
             others = tuple(other for other in tasks if other is not task)
             task.set_busy_check(lambda others=others: any(o.is_running() for o in others))
@@ -290,6 +300,8 @@ class MainWindow(QMainWindow):
             self._compare,
             self._photos,
             self._organization,
+            self._history,
+            self._dashboard,
         ):
             if page is not None and not page.request_shutdown():
                 event.ignore()

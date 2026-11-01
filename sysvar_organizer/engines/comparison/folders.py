@@ -155,8 +155,9 @@ class FolderComparer:
         self._current_path = ""
         self._emit(force=True)
         logger.info(
-            "Comparação encerrada: estado=%s arquivos_a=%d arquivos_b=%d lidos=%d "
+            "Comparação encerrada: id=%s estado=%s arquivos_a=%d arquivos_b=%d lidos=%d "
             "reaproveitados=%d bytes_lidos=%d tempo=%.1fs",
+            self._store.comparison_id,
             status,
             self._files["A"],
             self._files["B"],

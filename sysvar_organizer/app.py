@@ -10,7 +10,7 @@ from __future__ import annotations
 import logging
 import sys
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QLockFile, Qt
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from sysvar_organizer import APP_NAME, ORGANIZATION_NAME, __version__
@@ -24,6 +24,7 @@ from sysvar_organizer.ui.main_window import MainWindow
 logger = logging.getLogger(__name__)
 
 SELF_CHECK_FLAG = "--self-check"
+LOCK_FILE_NAME = "organizer.lock"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -40,25 +41,55 @@ def main(argv: list[str] | None = None) -> int:
     app = _create_application()
     install_exception_hook(_show_error_dialog)
 
-    context = build_context()
+    # Uma instância por vez: outra janela aberta ao mesmo tempo marcaria como
+    # interrompidas as atividades em andamento da primeira.
+    lock = QLockFile(str(paths.user_data_dir() / LOCK_FILE_NAME))
+    lock.setStaleLockTime(0)  # obsoleto só se o processo dono não existir mais
+    exclusive = bool(lock.tryLock(200))
+    if not exclusive and not self_check:
+        logger.warning("Outra instância do aplicativo já está aberta; encerrando")
+        QMessageBox.information(
+            None,
+            APP_NAME,
+            f"O {APP_NAME} já está aberto neste computador. Use a janela existente.",
+        )
+        return 1
+
+    context = build_context(recover_interrupted=exclusive)
     window = MainWindow(context)
 
     if self_check:
         from sysvar_organizer.diagnostics import run_self_check
 
-        return run_self_check(app, window, context)
+        try:
+            return run_self_check(app, window, context, exclusive=exclusive)
+        finally:
+            if exclusive:
+                lock.unlock()
 
     window.show()
     if context.database_error:
-        QMessageBox.warning(
-            window,
-            APP_NAME,
-            "O banco de dados local não pôde ser preparado. O aplicativo "
-            "funcionará sem persistência nesta sessão.\n\n" + context.database_error,
-        )
+        QMessageBox.warning(window, APP_NAME, database_error_text(context))
     exit_code = app.exec()
+    lock.unlock()
     logger.info("Aplicativo encerrado (código %d)", exit_code)
     return exit_code
+
+
+def database_error_text(context) -> str:
+    advice = {
+        "corrupted": "Não apague o arquivo: guarde uma cópia dele antes de qualquer tentativa "
+        "de recuperação. Nenhuma reconstrução é feita automaticamente.",
+        "incompatible": "Use a versão do aplicativo que criou este banco. O arquivo não foi "
+        "modificado.",
+        "inaccessible": "Verifique se outro programa está usando o arquivo e as permissões da "
+        "pasta de dados.",
+    }.get(context.database_error_category or "", "")
+    return (
+        "O banco de dados local não pôde ser preparado. O aplicativo funcionará sem "
+        "persistência nesta sessão; o histórico existente não foi apagado.\n\n"
+        f"{context.database_error}\n\n{advice}\n\nArquivo: {context.database_path}"
+    ).strip()
 
 
 def _create_application() -> QApplication:

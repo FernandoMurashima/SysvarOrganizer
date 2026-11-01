@@ -136,7 +136,8 @@ class OrganizationPlanner:
         self._current_path = ""
         self._emit(force=True)
         logger.info(
-            "Simulação encerrada: estado=%s arquivos=%d tempo=%.1fs",
+            "Simulação encerrada: id=%s estado=%s arquivos=%d tempo=%.1fs",
+            self._store.simulation_id,
             status,
             self._processed,
             elapsed,
