@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import sys
 from dataclasses import dataclass
+from pathlib import Path
 
 from PySide6.QtCore import QByteArray, Qt
 from PySide6.QtGui import QCloseEvent, QColor
@@ -91,6 +93,13 @@ PAGES: tuple[PageSpec, ...] = (
         "Preferências do aplicativo.",
     ),
 )
+
+
+def installation_text() -> str:
+    """Onde o programa está sendo executado (os dados ficam sempre fora dele)."""
+    if getattr(sys, "frozen", False):
+        return f"Aplicativo instalado em {Path(sys.executable).parent}"
+    return "Ambiente de desenvolvimento (Python)"
 
 
 class MainWindow(QMainWindow):
@@ -200,6 +209,8 @@ class MainWindow(QMainWindow):
                 spec.title,
                 spec.description,
                 info_rows=[
+                    ("Versão", __version__),
+                    ("Execução", installation_text()),
                     ("Pasta de dados", str(ctx.data_dir)),
                     ("Arquivo do banco", str(ctx.database_path)),
                     ("Registro de eventos", str(ctx.log_path)),

@@ -47,17 +47,45 @@ class AppContext:
         return self.database is not None
 
 
-def build_context(recover_interrupted: bool = True) -> AppContext:
+INSPECTION_MESSAGES = {
+    "missing": "O banco de dados ainda não foi criado (será criado na primeira abertura normal).",
+    "outdated": "O banco de dados usa o esquema v{version}; a atualização para a versão atual é "
+    "aplicada somente na abertura normal do aplicativo.",
+    "newer": "O banco de dados foi criado por uma versão mais recente do aplicativo "
+    "(esquema v{version}).",
+    "corrupted": "O arquivo do banco de dados local está danificado ou não é um banco SQLite válido.",
+    "inaccessible": "Não foi possível acessar o arquivo do banco de dados local.",
+}
+
+
+def build_context(recover_interrupted: bool = True, read_only: bool = False) -> AppContext:
     """Inicializa o banco local. Em caso de falha, o aplicativo segue sem persistência.
 
     ``recover_interrupted=False`` não altera registros de atividades em
     andamento (usado quando outra instância do aplicativo está aberta).
-    O arquivo do banco nunca é apagado ou recriado aqui.
+    ``read_only=True`` (diagnóstico) não cria, não migra e não altera o banco:
+    apenas o abre se já estiver na versão atual. O arquivo do banco nunca é
+    apagado ou recriado aqui.
     """
     db_path = paths.database_path()
     database = Database(db_path)
+    if read_only:
+        state, found = database.inspect()
+        if state != "current":
+            logger.info("Diagnóstico sem abrir o banco (estado=%s)", state)
+            return AppContext(
+                data_dir=paths.user_data_dir(),
+                database_path=db_path,
+                log_path=paths.log_path(),
+                database=None,
+                schema_version=found,
+                settings=None,
+                history=None,
+                database_error=INSPECTION_MESSAGES[state].format(version=found),
+                database_error_category=state,
+            )
     try:
-        version = database.initialize()
+        version = database.inspect()[1] if read_only else database.initialize()
     except DatabaseError as exc:
         logger.error("Banco de dados indisponível (categoria=%s)", exc.category, exc_info=True)
         return AppContext(
@@ -81,7 +109,7 @@ def build_context(recover_interrupted: bool = True) -> AppContext:
     operations = OperationsStore(database)
 
     notes: list[str] = []
-    if recover_interrupted:
+    if recover_interrupted and not read_only:
         for repository, text in (
             (history, "análise(s) de armazenamento interrompida(s) registrada(s) como falha"),
             (duplicates, "busca(s) de duplicados interrompida(s) registrada(s) como falha"),
@@ -102,7 +130,7 @@ def build_context(recover_interrupted: bool = True) -> AppContext:
             if count:
                 logger.warning("%d %s", count, text)
                 notes.append(f"{count} {text}")
-    else:
+    elif not read_only:
         logger.warning("Outra instância aberta: estados em andamento não foram alterados")
 
     return AppContext(

@@ -770,6 +770,34 @@ class Database:
     def check_integrity(self, full: bool = False) -> IntegrityResult:
         return check_integrity(self.path, full)
 
+    def inspect(self) -> tuple[str, int | None]:
+        """Estado do arquivo SEM criá-lo nem migrá-lo (conexão somente leitura).
+
+        Retorna ``(estado, versão)``; estado: ``missing``, ``current``,
+        ``outdated``, ``newer``, ``corrupted`` ou ``inaccessible``.
+        """
+        if not self.path.exists():
+            return "missing", None
+        if not self.path.is_file():
+            return "inaccessible", None
+        try:
+            uri = self.path.resolve().as_uri() + "?mode=ro"
+            conn = sqlite3.connect(uri, uri=True, timeout=5)
+        except (OSError, ValueError, sqlite3.Error):
+            return "inaccessible", None
+        try:
+            version = _user_version(conn)
+        except sqlite3.Error as exc:
+            error = classify_error(exc, "")
+            return ("corrupted" if isinstance(error, DatabaseCorrupted) else "inaccessible"), None
+        finally:
+            conn.close()
+        if version > LATEST_SCHEMA_VERSION:
+            return "newer", version
+        if version < LATEST_SCHEMA_VERSION:
+            return "outdated", version
+        return "current", version
+
     def schema_version(self) -> int:
         with self.connection() as conn:
             return _user_version(conn)

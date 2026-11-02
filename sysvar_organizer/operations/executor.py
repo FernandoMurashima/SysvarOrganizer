@@ -35,6 +35,7 @@ import logging
 import os
 import shutil
 import stat
+import sys
 from collections.abc import Callable
 
 from sysvar_organizer.operations.models import (
@@ -103,6 +104,10 @@ class SafeExecutor:
         area: IsolatedTestArea,
         fault: Callable[[str], None] | None = None,
     ) -> None:
+        if getattr(sys, "frozen", False):
+            # O aplicativo distribuído (empacotado) nunca executa operações físicas;
+            # este módulo nem é incluído no pacote. Barreira adicional.
+            raise OperationRefused("packaged_build", REAL_OPERATIONS_BLOCKED_MESSAGE)
         # Reabre a área para conferir marcador e token antes de qualquer uso.
         self._area = IsolatedTestArea.open(area.root, area.token)
         self._store = store

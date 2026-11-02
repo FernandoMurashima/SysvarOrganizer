@@ -1,0 +1,2 @@
+# Ferramentas de build (instalar SOMENTE no ambiente virtual do projeto).
+pyinstaller>=6.11,<7

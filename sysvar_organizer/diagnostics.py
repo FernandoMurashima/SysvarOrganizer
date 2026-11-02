@@ -1,20 +1,39 @@
 """Verificação rápida de inicialização (``--self-check``).
 
 Confirma importação dos módulos, abertura e redimensionamento da janela,
-navegação entre páginas e acesso ao banco SQLite. Não lê arquivos do usuário
-e não grava registros de teste no banco.
+navegação entre páginas, acesso ao banco SQLite, integridade rápida e o
+bloqueio das operações reais. É somente leitura: não lê arquivos do usuário,
+não cria, migra nem altera o banco e não grava a geometria da janela.
+
+O resultado é impresso no console (quando houver) e gravado em
+``logs/self-check.txt``; no aplicativo instalado, sem console, também é
+apresentado numa janela de aviso.
 """
 
 from __future__ import annotations
 
 import importlib
+import sys
+import tempfile
+from datetime import datetime
+from pathlib import Path
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtWidgets import QApplication, QMessageBox
 
+from sysvar_organizer import APP_NAME, __version__
+from sysvar_organizer.config import paths
 from sysvar_organizer.context import AppContext
 from sysvar_organizer.core.errors import DatabaseError
-from sysvar_organizer.persistence.database import LATEST_SCHEMA_VERSION
+from sysvar_organizer.persistence.database import LATEST_SCHEMA_VERSION, Database
 from sysvar_organizer.ui.main_window import PAGES, MainWindow
+
+REPORT_FILE_NAME = "self-check.txt"
+# Módulos que só existem no ambiente de desenvolvimento/testes: o executor
+# físico isolado NÃO é incluído no aplicativo distribuído.
+TEST_ONLY_MODULES = (
+    "sysvar_organizer.operations.safety",
+    "sysvar_organizer.operations.executor",
+)
 
 MODULES = (
     "sysvar_organizer",
@@ -59,10 +78,8 @@ MODULES = (
     "sysvar_organizer.engines.visual_analysis",
     "sysvar_organizer.operations",
     "sysvar_organizer.operations.models",
-    "sysvar_organizer.operations.safety",
     "sysvar_organizer.operations.associations",
     "sysvar_organizer.operations.planning",
-    "sysvar_organizer.operations.executor",
     "sysvar_organizer.persistence.operations_store",
     "sysvar_organizer.persistence.history_repository",
     "sysvar_organizer.reports",
@@ -94,8 +111,16 @@ MODULES = (
 )
 
 
+def is_packaged() -> bool:
+    return bool(getattr(sys, "frozen", False))
+
+
 def run_self_check(
-    app: QApplication, window: MainWindow, context: AppContext, exclusive: bool = True
+    app: QApplication,
+    window: MainWindow,
+    context: AppContext,
+    exclusive: bool = True,
+    dialog: bool = True,
 ) -> int:
     window.persist_geometry = False
     results: list[tuple[str, bool, str]] = []
@@ -148,8 +173,10 @@ def run_self_check(
     window._nav.setCurrentRow(0)  # noqa: SLF001
     results.append(("Navegação do menu lateral", nav_ok, f"{len(PAGES)} páginas"))
 
+    results.append(_physical_operations_check(window))
+
     if context.database is None or context.history is None:
-        results.append(("Banco SQLite", False, context.database_error or "indisponível"))
+        results.append(_database_without_context(context))
     else:
         try:
             version = context.database.schema_version()
@@ -173,17 +200,114 @@ def run_self_check(
             else "; ".join(integrity.problems[:3])
         )
         results.append(("Integridade do banco", integrity.ok, detail))
+    notes = []
     if not exclusive:
-        print(
-            "[AVISO] Outra instância do aplicativo está aberta: estados em andamento "
-            "não foram alterados por esta verificação."
+        notes.append(
+            "[AVISO] Outra instância do aplicativo está aberta: esta verificação não alterou "
+            "nenhum estado."
         )
 
     window.close()
     app.processEvents()
 
-    for name, ok, detail in results:
-        print(f"[{'OK' if ok else 'FALHA'}] {name}: {detail}")
     all_ok = all(ok for _, ok, _ in results)
-    print("Resultado:", "aprovado" if all_ok else "com falhas")
+    mode = "aplicativo instalado" if is_packaged() else "ambiente de desenvolvimento"
+    lines = [
+        f"{APP_NAME} {__version__} — verificação rápida ({mode})",
+        f"Data: {datetime.now().strftime('%d/%m/%Y %H:%M:%S')}",
+        *notes,
+        *(f"[{'OK' if ok else 'FALHA'}] {name}: {detail}" for name, ok, detail in results),
+        "Resultado: " + ("aprovado" if all_ok else "com falhas"),
+    ]
+    _publish(lines, all_ok, dialog)
     return 0 if all_ok else 1
+
+
+def _physical_operations_check(window: MainWindow) -> tuple[str, bool, str]:
+    """Os controles de execução física existem e estão desabilitados; no
+    aplicativo instalado, o executor físico nem faz parte do pacote."""
+    organization = getattr(window, "_organization", None)
+    review = getattr(organization, "_review", None)
+    buttons = list(getattr(review, "_physical_buttons", []))
+    disabled = bool(buttons) and not any(b.isEnabled() is True for b in buttons)
+    if is_packaged():
+        absent = 0
+        for name in TEST_ONLY_MODULES:
+            try:
+                importlib.import_module(name)
+            except ImportError:
+                absent += 1
+        packaged_ok = absent == len(TEST_ONLY_MODULES)
+        detail = (
+            "controles desabilitados; executor físico ausente do pacote"
+            if disabled and packaged_ok
+            else "ATENÇÃO: executor físico presente no pacote ou controles habilitados"
+        )
+        return ("Bloqueio das operações reais", disabled and packaged_ok, detail)
+    detail = (
+        "controles desabilitados; executor físico restrito aos testes automatizados"
+        if disabled
+        else "ATENÇÃO: controles de execução física habilitados"
+    )
+    return ("Bloqueio das operações reais", disabled, detail)
+
+
+def _database_without_context(context: AppContext) -> tuple[str, bool, str]:
+    category = context.database_error_category
+    if category == "missing":
+        # Ainda não há banco do usuário: valida o SQLite e as migrações num banco
+        # temporário, sem criar nada na pasta de dados.
+        try:
+            with tempfile.TemporaryDirectory(prefix="sysvar-organizer-diagnostico-") as tmp:
+                version = Database(Path(tmp) / "verificacao.db").initialize()
+        except (DatabaseError, OSError) as exc:
+            return ("Banco SQLite", False, f"falha no banco temporário: {exc}")
+        return (
+            "Banco SQLite",
+            version == LATEST_SCHEMA_VERSION,
+            "banco do usuário ainda não criado; SQLite verificado em banco temporário "
+            f"(esquema v{version})",
+        )
+    if category == "outdated":
+        return (
+            "Banco SQLite",
+            True,
+            f"{context.database_path} (esquema v{context.schema_version}; atualização para "
+            f"v{LATEST_SCHEMA_VERSION} pendente, aplicada na abertura normal)",
+        )
+    return ("Banco SQLite", False, context.database_error or "indisponível")
+
+
+def _publish(lines: list[str], all_ok: bool, dialog: bool) -> None:
+    text = "\n".join(lines)
+    report: Path | None = paths.log_dir() / REPORT_FILE_NAME
+    try:
+        report.parent.mkdir(parents=True, exist_ok=True)
+        report.write_text(text + "\n", encoding="utf-8")
+    except OSError:
+        report = None
+    console = _console_stream()
+    if console is not None:
+        print(text, file=console, flush=True)
+        return
+    if dialog and is_packaged():
+        where = f"\n\nRelatório gravado em:\n{report}" if report else ""
+        show = QMessageBox.information if all_ok else QMessageBox.warning
+        show(None, f"{APP_NAME} — diagnóstico", text + where)
+
+
+def _console_stream():
+    """Saída de console: a do processo ou, no executável sem console do
+    Windows, o console de quem o iniciou (prompt de comando), se houver."""
+    if sys.stdout is not None:
+        return sys.stdout
+    if sys.platform != "win32":
+        return None
+    try:
+        import ctypes
+
+        if ctypes.windll.kernel32.AttachConsole(-1):  # ATTACH_PARENT_PROCESS
+            return open("CONOUT$", "w", encoding="utf-8", errors="replace")  # noqa: SIM115
+    except (AttributeError, OSError):
+        pass
+    return None

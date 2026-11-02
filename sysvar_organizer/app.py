@@ -3,6 +3,9 @@
 Uso:
     python -m sysvar_organizer                 inicia o aplicativo
     python -m sysvar_organizer --self-check    verificação rápida e encerra
+
+No aplicativo instalado, ``SysvarOrganizer.exe --self-check`` executa o mesmo
+diagnóstico (somente leitura) e grava o resultado em ``logs/self-check.txt``.
 """
 
 from __future__ import annotations
@@ -24,7 +27,12 @@ from sysvar_organizer.ui.main_window import MainWindow
 logger = logging.getLogger(__name__)
 
 SELF_CHECK_FLAG = "--self-check"
+NO_DIALOG_FLAG = "--no-dialog"
 LOCK_FILE_NAME = "organizer.lock"
+# Identificadores usados pelo Windows (agrupamento na barra de tarefas) e pelo
+# instalador (detecção do aplicativo aberto antes de atualizar/desinstalar).
+APP_USER_MODEL_ID = "Sysvar.Organizer"
+APP_MUTEX_NAME = "SysvarOrganizer.AppMutex"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -38,6 +46,8 @@ def main(argv: list[str] | None = None) -> int:
     configure_logging(paths.log_path())
     logger.info("Iniciando %s %s", APP_NAME, __version__)
 
+    if not self_check:
+        _register_windows_identity()
     app = _create_application()
     install_exception_hook(_show_error_dialog)
 
@@ -55,14 +65,17 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1
 
-    context = build_context(recover_interrupted=exclusive)
+    # O diagnóstico nunca cria, migra ou altera o banco do usuário.
+    context = build_context(recover_interrupted=exclusive, read_only=self_check)
     window = MainWindow(context)
 
     if self_check:
         from sysvar_organizer.diagnostics import run_self_check
 
         try:
-            return run_self_check(app, window, context, exclusive=exclusive)
+            return run_self_check(
+                app, window, context, exclusive=exclusive, dialog=NO_DIALOG_FLAG not in args
+            )
         finally:
             if exclusive:
                 lock.unlock()
@@ -90,6 +103,24 @@ def database_error_text(context) -> str:
         "persistência nesta sessão; o histórico existente não foi apagado.\n\n"
         f"{context.database_error}\n\n{advice}\n\nArquivo: {context.database_path}"
     ).strip()
+
+
+_WINDOWS_HANDLES: list = []
+
+
+def _register_windows_identity() -> None:
+    """Identidade do processo no Windows; sem efeito em outros sistemas."""
+    if sys.platform != "win32":
+        return
+    try:
+        import ctypes
+
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID(APP_USER_MODEL_ID)
+        handle = ctypes.windll.kernel32.CreateMutexW(None, False, APP_MUTEX_NAME)
+        if handle:
+            _WINDOWS_HANDLES.append(handle)  # mantido aberto até o fim do processo
+    except (AttributeError, OSError):
+        logger.warning("Não foi possível registrar a identidade do aplicativo no Windows")
 
 
 def _create_application() -> QApplication:
