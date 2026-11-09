@@ -28,12 +28,9 @@ from sysvar_organizer.persistence.database import LATEST_SCHEMA_VERSION, Databas
 from sysvar_organizer.ui.main_window import PAGES, MainWindow
 
 REPORT_FILE_NAME = "self-check.txt"
-# Módulos que só existem no ambiente de desenvolvimento/testes: o executor
-# físico isolado NÃO é incluído no aplicativo distribuído.
-TEST_ONLY_MODULES = (
-    "sysvar_organizer.operations.safety",
-    "sysvar_organizer.operations.executor",
-)
+# Só existe no ambiente de desenvolvimento/testes: a área de testes isolada
+# NÃO é incluída no aplicativo distribuído.
+TEST_ONLY_MODULES = ("sysvar_organizer.operations.test_area",)
 
 MODULES = (
     "sysvar_organizer",
@@ -78,8 +75,15 @@ MODULES = (
     "sysvar_organizer.engines.visual_analysis",
     "sysvar_organizer.operations",
     "sysvar_organizer.operations.models",
+    "sysvar_organizer.operations.safety",
+    "sysvar_organizer.operations.authorization",
     "sysvar_organizer.operations.associations",
     "sysvar_organizer.operations.planning",
+    "sysvar_organizer.operations.executor",
+    "sysvar_organizer.operations.runner",
+    "sysvar_organizer.operations.recycle",
+    "sysvar_organizer.operations.consolidation",
+    "sysvar_organizer.persistence.consolidation_store",
     "sysvar_organizer.persistence.operations_store",
     "sysvar_organizer.persistence.history_repository",
     "sysvar_organizer.reports",
@@ -108,6 +112,7 @@ MODULES = (
     "sysvar_organizer.ui.pages.operations_review",
     "sysvar_organizer.ui.pages.history",
     "sysvar_organizer.ui.background",
+    "sysvar_organizer.ui.pages.consolidation",
 )
 
 
@@ -173,7 +178,7 @@ def run_self_check(
     window._nav.setCurrentRow(0)  # noqa: SLF001
     results.append(("Navegação do menu lateral", nav_ok, f"{len(PAGES)} páginas"))
 
-    results.append(_physical_operations_check(window))
+    results.append(_physical_operations_check(window, context))
 
     if context.database is None or context.history is None:
         results.append(_database_without_context(context))
@@ -223,33 +228,43 @@ def run_self_check(
     return 0 if all_ok else 1
 
 
-def _physical_operations_check(window: MainWindow) -> tuple[str, bool, str]:
-    """Os controles de execução física existem e estão desabilitados; no
-    aplicativo instalado, o executor físico nem faz parte do pacote."""
+def _physical_operations_check(window: MainWindow, context: AppContext) -> tuple[str, bool, str]:
+    """Operações reais restritas a áreas autorizadas: sem plano controlado
+    selecionado, os controles de execução física ficam desabilitados; a Lixeira
+    está desabilitada; no aplicativo instalado, a área de testes não existe."""
+    from sysvar_organizer.operations.recycle import RECYCLE_BIN_ENABLED
+
     organization = getattr(window, "_organization", None)
     review = getattr(organization, "_review", None)
     buttons = list(getattr(review, "_physical_buttons", []))
-    disabled = bool(buttons) and not any(b.isEnabled() is True for b in buttons)
+    plan = review._plan() if review is not None else None  # noqa: SLF001
+    controlled = plan is not None and plan.area_id is not None
+    gated = bool(buttons) and (controlled or not any(b.isEnabled() is True for b in buttons))
+    areas = 0
+    if context.operations is not None:
+        try:
+            areas = len(context.operations.areas())
+        except DatabaseError:
+            areas = 0
+    test_area_absent = True
     if is_packaged():
-        absent = 0
         for name in TEST_ONLY_MODULES:
             try:
                 importlib.import_module(name)
+                test_area_absent = False
             except ImportError:
-                absent += 1
-        packaged_ok = absent == len(TEST_ONLY_MODULES)
+                pass
+    ok = gated and not RECYCLE_BIN_ENABLED and test_area_absent
+    if ok:
         detail = (
-            "controles desabilitados; executor físico ausente do pacote"
-            if disabled and packaged_ok
-            else "ATENÇÃO: executor físico presente no pacote ou controles habilitados"
+            f"execução física somente em áreas autorizadas ({areas} ativa(s)); "
+            "Lixeira e exclusão desabilitadas"
         )
-        return ("Bloqueio das operações reais", disabled and packaged_ok, detail)
-    detail = (
-        "controles desabilitados; executor físico restrito aos testes automatizados"
-        if disabled
-        else "ATENÇÃO: controles de execução física habilitados"
-    )
-    return ("Bloqueio das operações reais", disabled, detail)
+        if is_packaged():
+            detail += "; área de testes ausente do pacote"
+    else:
+        detail = "ATENÇÃO: controles físicos sem autorização, Lixeira ativa ou área de testes no pacote"
+    return ("Política de operações reais", ok, detail)
 
 
 def _database_without_context(context: AppContext) -> tuple[str, bool, str]:

@@ -6,9 +6,11 @@
 # Use packaging\build_windows.cmd, que gera o arquivo de versão e valida o
 # resultado; esta especificação não deve ser executada diretamente.
 #
-# Segurança: o executor físico isolado (usado apenas pelos testes
-# automatizados) é EXCLUÍDO do pacote. O aplicativo distribuído não contém
-# código capaz de mover, copiar ou excluir arquivos analisados.
+# Segurança (Bloco 10): o pacote inclui o executor físico e a política de
+# autorização. Copiar, mover e reverter só acontecem dentro de áreas de
+# homologação autorizadas pelo usuário; o executor confere a autorização por
+# conta própria. A área de testes isolada (exclusiva dos testes automatizados)
+# é EXCLUÍDA do pacote. Não há exclusão de arquivos; Lixeira desabilitada.
 
 import os
 from pathlib import Path
@@ -23,10 +25,9 @@ if not VERSION_FILE or not Path(VERSION_FILE).is_file():
         "Arquivo de versão do executável ausente. Gere o pacote com packaging\\build_windows.cmd."
     )
 
-# Nunca distribuídos: executor físico e verificações de área de teste.
+# Nunca distribuídos: área de testes isolada dos testes automatizados.
 TEST_ONLY_MODULES = [
-    "sysvar_organizer.operations.executor",
-    "sysvar_organizer.operations.safety",
+    "sysvar_organizer.operations.test_area",
 ]
 # Módulos Qt não utilizados (o aplicativo usa apenas QtCore, QtGui e QtWidgets).
 QT_EXCLUDES = [

@@ -8,7 +8,8 @@ ambiente virtual do projeto (``.venv``). Etapas:
 2. prepara as pastas próprias do build (``build\\windows`` e ``dist\\windows``),
    apagando somente pastas criadas por este script (marcador);
 3. gera o arquivo de versão do executável e executa o PyInstaller;
-4. confere que o executor físico NÃO entrou no pacote;
+4. confere que a área de testes isolada NÃO entrou no pacote e que o
+   executor controlado e a política de autorização entraram;
 5. copia os textos de licença dos componentes distribuídos e grava
    ``build-info.json`` (versões e hashes, para rastreabilidade);
 6. executa o diagnóstico do executável gerado num diretório de dados isolado,
@@ -47,8 +48,12 @@ WORK_DIR = ROOT / "build" / "windows"
 DIST_DIR = ROOT / "dist" / "windows"
 APP_NAME = "SysvarOrganizer"
 MARKER = ".sysvar-organizer-build"
-TEST_ONLY_MODULES = (
+TEST_ONLY_MODULES = ("sysvar_organizer.operations.test_area",)
+# Componentes da execução controlada que DEVEM estar no pacote (Bloco 10).
+CONTROLLED_MODULES = (
+    "sysvar_organizer.operations.authorization",
     "sysvar_organizer.operations.executor",
+    "sysvar_organizer.operations.runner",
     "sysvar_organizer.operations.safety",
 )
 REQUIRED_MODULES = {"PySide6": "PySide6", "PIL": "Pillow", "numpy": "numpy", "PyInstaller": "pyinstaller"}
@@ -224,10 +229,15 @@ def check_bundle_contents(toc_text: str) -> None:
     present = [m for m in TEST_ONLY_MODULES if f"'{m}'" in toc_text]
     if present:
         raise BuildError(
-            "SEGURANÇA: o executor físico entrou no pacote (" + ", ".join(present) + "). "
+            "SEGURANÇA: a área de testes isolada entrou no pacote (" + ", ".join(present) + "). "
             "O pacote foi recusado."
         )
-    for required in ("sysvar_organizer.app", "sysvar_organizer.reports.export", "sysvar_organizer.diagnostics"):
+    for required in (
+        "sysvar_organizer.app",
+        "sysvar_organizer.reports.export",
+        "sysvar_organizer.diagnostics",
+        *CONTROLLED_MODULES,
+    ):
         if f"'{required}'" not in toc_text:
             raise BuildError(f"Módulo obrigatório ausente do pacote: {required}")
 
@@ -326,6 +336,7 @@ def write_build_info(app_dir: Path, version: str, licenses: dict, iscc: Path | N
         "arquivos": len(files),
         "tamanho_bytes": sum(p.stat().st_size for p in files),
         "modulos_excluidos": list(TEST_ONLY_MODULES),
+        "operacoes_reais": "somente em áreas de homologação autorizadas (copiar, mover, reverter)",
         "licencas": licenses,
     }
     target = app_dir.parent / "build-info.json"
@@ -395,7 +406,7 @@ def build(args: argparse.Namespace) -> int:
         raise BuildError(f"Executável não encontrado após o PyInstaller: {exe}")
 
     check_bundle_contents(bundled_module_names(work / "pyinstaller"))
-    say("Conferido: executor físico ausente do pacote.")
+    say("Conferido: área de testes ausente do pacote; executor controlado e política de autorização presentes.")
     licenses = collect_licenses(app_dir)
     if licenses["sem_texto_de_licenca_localizado"]:
         say("ATENÇÃO: licença não localizada para: " + ", ".join(licenses["sem_texto_de_licenca_localizado"]))

@@ -331,8 +331,9 @@ class DashboardPage(QWidget):
             ("Qt / PySide6", f"{qVersion()} / {PySide6.__version__}"),
             (
                 "Operações em arquivos",
-                "Execução sobre arquivos reais bloqueada. Análises, buscas, prévias e "
-                "planos são apenas registrados; nenhum arquivo é alterado, movido ou excluído.",
+                "Copiar, mover e reverter somente dentro de áreas de homologação autorizadas, "
+                "com seleção, validação e confirmação. Análises, buscas e prévias não alteram "
+                "arquivos. Exclusão e envio à Lixeira continuam bloqueados.",
             ),
         ]
         box.addSpacing(4)
@@ -430,9 +431,11 @@ class DashboardPage(QWidget):
             "indexadas, sem sincronizar, copiar ou mover arquivos.",
             "Disponível: Fotografias Semelhantes — semelhança visual por assinatura "
             "perceptual, somente para consulta.",
-            "Disponível: Organização — simulação (prévia) e revisão de operações: planos "
-            "podem ser criados e revisados, mas a execução sobre arquivos reais está "
-            "bloqueada nesta etapa.",
+            "Disponível: Organização — simulação (prévia) e revisão de operações. Planos em "
+            "áreas autorizadas (TESTE REAL CONTROLADO) podem ser validados, executados e "
+            "revertidos; os demais são apenas revisados.",
+            "Disponível: Consolidação de unidades — move para a unidade principal somente o "
+            "que existe apenas na outra unidade, com prévia, autorização e conferência.",
             "Disponível: Histórico — consulta às atividades, aos planos de operação, "
             "às falhas e às reversões registradas.",
         ):

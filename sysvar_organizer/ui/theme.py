@@ -109,7 +109,7 @@ QLabel {
 }
 
 /* Selos de estado */
-#BadgeUnavailable, #BadgeOk, #BadgeError {
+#BadgeUnavailable, #BadgeOk, #BadgeError, #BadgeInfo {
     border-radius: 9px;
     padding: 2px 10px;
     font-size: 11px;
@@ -126,6 +126,10 @@ QLabel {
 #BadgeError {
     background: #FEE2E2;
     color: #991B1B;
+}
+#BadgeInfo {
+    background: #DBEAFE;
+    color: #1E40AF;
 }
 
 /* Indicadores compactos (página Analisar Armazenamento) */

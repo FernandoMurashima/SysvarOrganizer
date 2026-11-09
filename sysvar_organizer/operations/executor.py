@@ -1,11 +1,18 @@
-"""Executor seguro de operações — SOMENTE dentro de uma área de testes isolada.
+"""Executor seguro de operações físicas: copiar, mover, reverter e reconciliar.
 
-Arquitetura:
+Autorização (verificada pelo próprio executor, independentemente da interface):
 
-* O executor exige uma ``IsolatedTestArea`` válida (marcador + token) e só
-  aceita planos do ambiente "test" cuja raiz seja exatamente essa área.
-  Planos do ambiente real são sempre recusados: nesta etapa, operações reais
-  estão bloqueadas.
+* Modo CONTROLADO (``SafeExecutor(store, None)``): o plano precisa ser do
+  ambiente real, ter sido criado vinculado a áreas autorizadas ATIVAS e cuja
+  identidade física confere (``authorization``). Origem e destino de cada
+  ação precisam estar dentro dessas áreas. Planos sem área (inclusive todos
+  os anteriores ao Bloco 10) são sempre recusados.
+* Modo TESTE (``SafeExecutor(store, area_de_teste)``): só para os testes
+  automatizados, com uma ``IsolatedTestArea`` válida; recusado no aplicativo
+  distribuído.
+
+Garantias (iguais nos dois modos):
+
 * Estados explícitos e trocas por comparação (planejada → validada → em
   execução → concluída/falhou; concluída → reversão pendente → revertida).
   O estado "em execução" é gravado ANTES de tocar no disco; uma nova
@@ -17,25 +24,29 @@ Arquitetura:
 * Cópia: grava em arquivo temporário exclusivo na pasta de destino, confere
   o SHA-256 com o da origem validada e só então cria o nome final sem
   sobrescrita (link do temporário; no Windows, renomeação que falha se o
-  destino existir).
+  destino existir). A origem é preservada.
 * Movimentação no mesmo volume: cria o nome de destino como link do mesmo
   arquivo físico (falha se o destino existir), confere que é o mesmo arquivo
   e só então remove o nome de origem. Entre volumes (ou sem suporte a link):
   cópia verificada e, só depois de conferir o SHA-256 do destino, remoção da
   origem. Nunca há momento em que a única cópia válida deixe de existir.
-* Falhas: o temporário (criado pelo próprio executor) é removido; a origem é
-  preservada; o resultado é registrado. Sucesso só é registrado depois de
-  conferir o estado físico do destino.
+* Falhas e cancelamento: o temporário (criado pelo próprio executor) é
+  removido; a origem é preservada; o resultado é registrado. Falta de espaço
+  e falta de permissão são relatadas como bloqueios (nada foi alterado).
+* Exclusão de arquivos do usuário não existe: o único arquivo removido é o
+  nome de origem de uma movimentação já conferida no destino.
 """
 
 from __future__ import annotations
 
+import errno
 import hashlib
 import logging
 import os
 import shutil
 import stat
 import sys
+import threading
 from collections.abc import Callable
 
 from sysvar_organizer.operations.models import (
@@ -43,6 +54,7 @@ from sysvar_organizer.operations.models import (
     ACTION_KEEP,
     ACTION_MOVE,
     ACTION_REVIEW,
+    ENV_REAL,
     ENV_TEST,
     REAL_OPERATIONS_BLOCKED_MESSAGE,
     STATE_BLOCKED,
@@ -55,8 +67,14 @@ from sysvar_organizer.operations.models import (
     STATE_RUNNING,
     STATE_VALIDATED,
 )
-from sysvar_organizer.operations.safety import IsolatedTestArea, UnsafePath, is_link_like
-from sysvar_organizer.persistence.operations_store import OperationItem, OperationsStore
+from sysvar_organizer.core.errors import DatabaseError
+from sysvar_organizer.operations.authorization import AuthorizedArea
+from sysvar_organizer.operations.safety import ConfinedRoot, UnsafePath, is_link_like
+from sysvar_organizer.persistence.operations_store import (
+    OperationItem,
+    OperationsStore,
+    PlanRecord,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +90,10 @@ class OperationRefused(Exception):
         super().__init__(message)
         self.code = code
         self.message = message
+
+
+class OperationCancelled(Exception):
+    """Cancelamento solicitado durante a gravação (temporário descartado)."""
 
 
 def sha256_of(path: str) -> str:
@@ -97,46 +119,100 @@ def _regular(path: str) -> os.stat_result:
     return st
 
 
+def _refusal_from_os_error(exc: OSError) -> OperationRefused | None:
+    """Erros do sistema que significam "nada foi feito" viram bloqueio explicado."""
+    if exc.errno in (errno.ENOSPC, getattr(errno, "EDQUOT", -1)) or getattr(exc, "winerror", 0) in (39, 112):
+        return OperationRefused("no_space", "Espaço insuficiente no destino; nada foi alterado.")
+    if isinstance(exc, PermissionError) or exc.errno in (errno.EACCES, errno.EPERM):
+        return OperationRefused("permission", "Sem permissão para concluir a operação; nada foi alterado.")
+    return None
+
+
 class SafeExecutor:
     def __init__(
         self,
         store: OperationsStore,
-        area: IsolatedTestArea,
+        area=None,
         fault: Callable[[str], None] | None = None,
+        cancel: threading.Event | None = None,
     ) -> None:
-        if getattr(sys, "frozen", False):
-            # O aplicativo distribuído (empacotado) nunca executa operações físicas;
-            # este módulo nem é incluído no pacote. Barreira adicional.
-            raise OperationRefused("packaged_build", REAL_OPERATIONS_BLOCKED_MESSAGE)
-        # Reabre a área para conferir marcador e token antes de qualquer uso.
-        self._area = IsolatedTestArea.open(area.root, area.token)
+        """``area=None``: modo controlado (áreas autorizadas no banco).
+        ``area=IsolatedTestArea``: modo de teste automatizado."""
         self._store = store
         self._fault = fault or (lambda _checkpoint: None)
+        self._cancel = cancel
+        self._created: tuple[str, tuple[int, int]] | None = None
+        self._test_area = None
+        if area is not None:
+            if getattr(sys, "frozen", False):
+                # Áreas de teste não existem no aplicativo distribuído.
+                raise OperationRefused("packaged_build", "Área de testes recusada no aplicativo distribuído.")
+            # Reabre a área para conferir marcador e token antes de qualquer uso.
+            self._test_area = type(area).open(area.root, area.token)
+
+    @property
+    def controlled(self) -> bool:
+        return self._test_area is None
 
     # Autorização -----------------------------------------------------------
 
-    def _authorize(self, item: OperationItem) -> None:
+    def _plan(self, item: OperationItem) -> PlanRecord:
         plan = self._store.plan(item.plan_id)
         if plan is None:
             raise OperationRefused("plan_missing", "Plano inexistente.")
-        if plan.environment != ENV_TEST or not plan.test_root:
+        return plan
+
+    def _area(self, area_id: int | None) -> AuthorizedArea:
+        record = self._store.area(area_id) if area_id is not None else None
+        if record is None:
             raise OperationRefused("real_operations_blocked", REAL_OPERATIONS_BLOCKED_MESSAGE)
-        if os.path.normcase(os.path.normpath(plan.test_root)) != os.path.normcase(self._area.root):
-            raise OperationRefused(
-                "outside_area", "O plano não pertence a esta área de testes isolada."
-            )
+        area = AuthorizedArea(
+            record.id, record.root, record.volume_id, record.dir_index, record.status
+        )
+        try:
+            return area.verify()
+        except UnsafePath as exc:
+            raise OperationRefused(exc.code, exc.message) from exc
+
+    def _scope(self, item: OperationItem) -> tuple[ConfinedRoot, ConfinedRoot]:
+        """Raízes autorizadas para a origem e o destino da ação."""
+        plan = self._plan(item)
+        if self._test_area is not None:
+            if plan.environment != ENV_TEST or not plan.test_root:
+                raise OperationRefused(
+                    "wrong_scope", "O executor de testes só aceita planos da área de testes."
+                )
+            if os.path.normcase(os.path.normpath(plan.test_root)) != os.path.normcase(
+                self._test_area.root
+            ):
+                raise OperationRefused(
+                    "outside_area", "O plano não pertence a esta área de testes isolada."
+                )
+            return self._test_area, self._test_area
+        if plan.environment != ENV_REAL or plan.area_id is None:
+            raise OperationRefused("real_operations_blocked", REAL_OPERATIONS_BLOCKED_MESSAGE)
+        source_area = self._area(plan.area_id)
+        destination_id = plan.destination_area_id or plan.area_id
+        destination_area = (
+            source_area if destination_id == source_area.id else self._area(destination_id)
+        )
+        return source_area, destination_area
 
     def _load(self, item_id: int) -> OperationItem:
         item = self._store.item(item_id)
         if item is None:
             raise OperationRefused("item_missing", "Ação inexistente.")
-        self._authorize(item)
+        self._scope(item)
         return item
 
     def _paths(self, item: OperationItem) -> tuple[str, str | None]:
-        source = self._area.resolve(item.source_path)
-        target = self._area.resolve(item.destination_path) if item.destination_path else None
+        source_root, destination_root = self._scope(item)
+        source = source_root.resolve(item.source_path)
+        target = destination_root.resolve(item.destination_path) if item.destination_path else None
         return source, target
+
+    def _where(self) -> str:
+        return "na área autorizada" if self.controlled else "na área de testes"
 
     def _block(self, item: OperationItem, from_states, code: str, message: str) -> str:
         self._store.transition(item.id, from_states, STATE_BLOCKED, block_reason=message)
@@ -203,7 +279,7 @@ class SafeExecutor:
             src_volume=str(st.st_dev), src_index=str(st.st_ino),
             src_mtime_ns=st.st_mtime_ns, sha256=digest, block_reason=None,
         )
-        self._store.add_event(item.plan_id, item.id, "info", "validated", "Ação validada na área de testes.")
+        self._store.add_event(item.plan_id, item.id, "info", "validated", f"Ação validada {self._where()}.")
         return STATE_VALIDATED
 
     # Execução ----------------------------------------------------------------
@@ -223,9 +299,10 @@ class SafeExecutor:
         if not self._store.transition(item.id, (STATE_VALIDATED,), STATE_RUNNING):
             self._store.finish_execution(execution, "blocked", None, "Estado mudou antes da execução.")
             return self._store.item(item.id).state
-        self._store.add_event(item.plan_id, item.id, "info", "running", "Execução iniciada (área de testes).")
+        self._store.add_event(item.plan_id, item.id, "info", "running", f"Execução iniciada {self._where()}.")
 
-        temp = None
+        temp = source = None
+        self._created = None
         try:
             source, target = self._paths(item)
             st = _regular(source)
@@ -240,7 +317,7 @@ class SafeExecutor:
             else:
                 if os.path.lexists(target):
                     raise OperationRefused("destination_occupied", "O destino foi ocupado depois da validação.")
-                self._make_parents(target)
+                self._make_parents(target, self._scope(item)[1])
                 temp = self._temp_name(item, target)
                 if item.action_type == ACTION_COPY:
                     method = self._copy(source, target, temp, item)
@@ -262,37 +339,113 @@ class SafeExecutor:
             self._store.finish_execution(execution, STATE_COMPLETED, method, "Concluída e conferida.")
             self._store.add_event(item.plan_id, item.id, "info", "completed", f"Concluída: {method}.")
             return STATE_COMPLETED
-        except (OperationRefused, UnsafePath) as exc:
+        except DatabaseError:
+            # O registro falhou, não o disco: o estado físico fica como está e a
+            # ação permanece "em execução" para ser reconciliada na próxima abertura.
             self._cleanup_temp(temp)
-            self._store.transition(item.id, (STATE_RUNNING,), STATE_BLOCKED, block_reason=exc.message)
-            self._store.finish_execution(execution, STATE_BLOCKED, None, exc.message)
-            self._store.add_event(item.plan_id, item.id, "warning", exc.code, exc.message)
+            self._created = None
+            raise
+        except OperationCancelled:
+            note = self._abort(temp, source, item)
+            message = "Cancelada antes da conclusão; temporário descartado e origem preservada." + note
+            self._store.transition(item.id, (STATE_RUNNING,), STATE_VALIDATED)
+            self._store.finish_execution(execution, "cancelled", None, message)
+            self._store.add_event(item.plan_id, item.id, "warning", "cancelled", message)
+            return STATE_VALIDATED
+        except (OSError, OperationRefused, UnsafePath) as exc:
+            note = self._abort(temp, source, item)
+            refused = exc if not isinstance(exc, OSError) else _refusal_from_os_error(exc)
+            if refused is None:
+                return self._execution_failed(item, execution, exc, note)
+            message = refused.message + note
+            self._store.transition(item.id, (STATE_RUNNING,), STATE_BLOCKED, block_reason=message)
+            self._store.finish_execution(execution, STATE_BLOCKED, None, message)
+            self._store.add_event(item.plan_id, item.id, "warning", refused.code, message)
             return STATE_BLOCKED
         except Exception as exc:  # noqa: BLE001 - qualquer falha física é registrada
-            self._cleanup_temp(temp)
-            message = f"Falha durante a execução: {exc}. A origem foi preservada."
-            logger.exception("Falha na execução de teste")
-            self._store.transition(item.id, (STATE_RUNNING,), STATE_FAILED, block_reason=message)
-            self._store.finish_execution(execution, STATE_FAILED, None, message)
-            self._store.add_event(item.plan_id, item.id, "error", "failed", message)
-            return STATE_FAILED
+            note = self._abort(temp, source, item)
+            return self._execution_failed(item, execution, exc, note)
+
+    def _abort(
+        self, temp: str | None, source: str | None, item: OperationItem, reverting: bool = False
+    ) -> str:
+        """Descarta o temporário e, se a origem continua intacta, desfaz o destino
+        criado NESTA execução (nunca toca em arquivo que não foi criado aqui)."""
+        self._cleanup_temp(temp)
+        created, self._created = self._created, None
+        if created is None or source is None:
+            return ""
+        target, identity = created
+        try:
+            src = os.lstat(source)
+            dst = os.lstat(target)
+        except OSError:
+            return ""  # sem origem: o destino é a única cópia e é preservado
+        expected = (
+            (item.dst_volume, item.dst_index, item.size_bytes)
+            if reverting
+            else (item.src_volume, item.src_index, item.size_bytes)
+        )
+        if (str(src.st_dev), str(src.st_ino), src.st_size) != expected or (
+            dst.st_dev, dst.st_ino
+        ) != identity:
+            return " Destino preservado para revisão manual."
+        try:
+            os.unlink(target)
+        except OSError:
+            logger.error("Não foi possível desfazer o destino criado (ação=%s)", item.id)
+            return " Não foi possível desfazer o arquivo criado; revisão manual necessária."
+        return " O arquivo criado nesta execução foi desfeito; o original permanece intacto."
+
+    def _execution_failed(
+        self, item: OperationItem, execution: int, exc: BaseException, note: str = ""
+    ) -> str:
+        message = f"Falha durante a execução: {exc}. A origem foi preservada.{note}"
+        logger.error("Falha na execução (ação=%s, tipo=%s)", item.id, type(exc).__name__)
+        self._store.transition(item.id, (STATE_RUNNING,), STATE_FAILED, block_reason=message)
+        self._store.finish_execution(execution, STATE_FAILED, None, message)
+        self._store.add_event(item.plan_id, item.id, "error", "failed", message)
+        return STATE_FAILED
 
     # Reversão ----------------------------------------------------------------
 
-    def revert(self, item_id: int) -> str:
-        item = self._load(item_id)
+    def revert_preflight(self, item_id: int) -> str | None:
+        """Confere, SEM alterar nada, se a reversão é possível. Retorna o motivo
+        do bloqueio ou ``None``."""
+        try:
+            item = self._load(item_id)
+            self._check_revertible(item)
+            original, current = self._paths(item)
+            st = _regular(current)
+        except (OperationRefused, UnsafePath) as exc:
+            return exc.message
+        if (str(st.st_dev), str(st.st_ino), st.st_size, st.st_mtime_ns) != (
+            item.dst_volume, item.dst_index, item.size_bytes, item.dst_mtime_ns,
+        ) or sha256_of(current) != item.sha256:
+            return "O arquivo foi alterado depois da operação; reversão bloqueada."
+        if os.path.lexists(original):
+            return "O caminho original está ocupado; a reversão não sobrescreve arquivos."
+        return None
+
+    @staticmethod
+    def _check_revertible(item: OperationItem) -> None:
         if item.state != STATE_COMPLETED or not item.reversible:
             message = (
-                "Cópia não requer reversão: a origem foi preservada."
+                "Cópia não é revertida por remoção: a origem foi preservada e a cópia permanece."
                 if item.action_type == ACTION_COPY
                 else "Somente movimentações concluídas e conferidas podem ser revertidas."
             )
             raise OperationRefused("not_reversible", message)
+
+    def revert(self, item_id: int) -> str:
+        item = self._load(item_id)
+        self._check_revertible(item)
         recovery = self._store.start_recovery(item.id)
         if not self._store.transition(item.id, (STATE_COMPLETED,), STATE_REVERT_PENDING):
             self._store.finish_recovery(recovery, "blocked", "Estado mudou antes da reversão.")
             return self._store.item(item.id).state
-        temp = None
+        temp = current = None
+        self._created = None
         try:
             original, current = self._paths(item)
             st = _regular(current)
@@ -308,7 +461,7 @@ class SafeExecutor:
                     "original_occupied",
                     "O caminho original está ocupado; a reversão não sobrescreve arquivos.",
                 )
-            self._make_parents(original)
+            self._make_parents(original, self._scope(item)[0])
             temp = self._temp_name(item, original)
             method = self._move(current, original, temp, item, st)
             temp = None
@@ -319,20 +472,31 @@ class SafeExecutor:
             self._store.finish_recovery(recovery, "reverted", f"Revertida: {method}.")
             self._store.add_event(item.plan_id, item.id, "info", "reverted", "Movimentação revertida e conferida.")
             return STATE_REVERTED
-        except (OperationRefused, UnsafePath) as exc:
+        except DatabaseError:
             self._cleanup_temp(temp)
+            self._created = None
+            raise
+        except (OSError, OperationRefused, UnsafePath) as exc:
+            note = self._abort(temp, current, item, reverting=True)
+            refused = exc if not isinstance(exc, OSError) else _refusal_from_os_error(exc)
+            if refused is None:
+                return self._revert_failed(item, recovery, exc, note)
+            message = refused.message + note
             self._store.transition(item.id, (STATE_REVERT_PENDING,), STATE_COMPLETED)
-            self._store.finish_recovery(recovery, "blocked", exc.message)
-            self._store.add_event(item.plan_id, item.id, "warning", exc.code, exc.message)
+            self._store.finish_recovery(recovery, "blocked", message)
+            self._store.add_event(item.plan_id, item.id, "warning", refused.code, message)
             return STATE_COMPLETED
         except Exception as exc:  # noqa: BLE001
-            self._cleanup_temp(temp)
-            message = f"Falha na reversão: {exc}. Nenhum arquivo foi removido sem cópia conferida."
-            logger.exception("Falha na reversão de teste")
-            self._store.transition(item.id, (STATE_REVERT_PENDING,), STATE_FAILED, block_reason=message)
-            self._store.finish_recovery(recovery, "failed", message)
-            self._store.add_event(item.plan_id, item.id, "error", "revert_failed", message)
-            return STATE_FAILED
+            note = self._abort(temp, current, item, reverting=True)
+            return self._revert_failed(item, recovery, exc, note)
+
+    def _revert_failed(self, item: OperationItem, recovery: int, exc: BaseException, note: str) -> str:
+        message = f"Falha na reversão: {exc}. Nenhum arquivo foi removido sem cópia conferida.{note}"
+        logger.error("Falha na reversão (ação=%s, tipo=%s)", item.id, type(exc).__name__)
+        self._store.transition(item.id, (STATE_REVERT_PENDING,), STATE_FAILED, block_reason=message)
+        self._store.finish_recovery(recovery, "failed", message)
+        self._store.add_event(item.plan_id, item.id, "error", "revert_failed", message)
+        return STATE_FAILED
 
     # Reconciliação após interrupção ------------------------------------------
 
@@ -343,16 +507,29 @@ class SafeExecutor:
             raise OperationRefused("invalid_state", "Somente ações interrompidas são reconciliadas.")
         execution = self._store.start_execution(item.id, "reconcile", item.state)
         source, target = self._paths(item)
-        removed = self._remove_own_temps(item, target) + self._remove_own_temps(item, source)
+        source_root, destination_root = self._scope(item)
+        removed = self._remove_own_temps(item, target, destination_root) + self._remove_own_temps(
+            item, source, source_root
+        )
         src_ok = self._matches(source, item.sha256)
         dst_ok = self._matches(target, item.sha256) if target else False
         was_reverting = item.dst_index is not None  # já tinha sido concluída antes
 
+        twin = self._same_physical(source, target)
         if item.action_type == ACTION_COPY:
             if src_ok and dst_ok:
                 state, note = STATE_COMPLETED, "Cópia encontrada íntegra no destino."
             else:
                 state, note = STATE_FAILED, "Cópia não concluída; a origem foi preservada."
+        elif twin and src_ok:
+            # Interrompida logo após criar o segundo nome do MESMO arquivo físico.
+            # Regra homologada (Bloco 07): a reconciliação não remove nada.
+            state, note = (
+                STATE_FAILED,
+                "Interrompida: origem e destino são dois nomes do MESMO arquivo físico (nenhum "
+                "espaço extra; nenhum conteúdo perdido). Nada foi removido; revisão manual: "
+                "mantenha apenas um dos nomes.",
+            )
         elif was_reverting:
             if src_ok and not os.path.lexists(target):
                 state, note = STATE_REVERTED, "Reversão encontrada concluída e íntegra."
@@ -397,6 +574,8 @@ class SafeExecutor:
         try:
             with os.fdopen(descriptor, "wb") as out, open(source, "rb", buffering=0) as src:
                 while True:
+                    if self._cancel is not None and self._cancel.is_set():
+                        raise OperationCancelled()
                     chunk = src.read(CHUNK)
                     if not chunk:
                         break
@@ -409,6 +588,8 @@ class SafeExecutor:
                 raise OperationRefused("modified", "A origem mudou durante a cópia.")
             shutil.copystat(source, temp)
             self._finalize_without_overwrite(temp, target)
+            created = os.lstat(target)
+            self._created = (target, (created.st_dev, created.st_ino))
         except BaseException:
             self._cleanup_temp(temp)
             raise
@@ -424,6 +605,8 @@ class SafeExecutor:
             except OSError:
                 same_volume = False  # sistema sem suporte a links: usa cópia verificada
             else:
+                linked = os.lstat(target)
+                self._created = (target, (linked.st_dev, linked.st_ino))
                 self._fault("after_link")
                 linked, original = os.lstat(target), os.lstat(source)
                 if (linked.st_dev, linked.st_ino) != (original.st_dev, original.st_ino):
@@ -458,16 +641,16 @@ class SafeExecutor:
 
     # Auxiliares ----------------------------------------------------------------
 
-    def _make_parents(self, target: str) -> None:
+    def _make_parents(self, target: str, root: ConfinedRoot) -> None:
         missing = []
         current = os.path.dirname(target)
         while not os.path.lexists(current):
             missing.append(current)
             current = os.path.dirname(current)
         for folder in reversed(missing):
-            self._area.resolve(folder)
+            root.resolve(folder)
             os.mkdir(folder)
-        self._area.resolve(target)  # confere de novo após criar as pastas
+        root.resolve(target)  # confere de novo após criar as pastas
 
     def _existing_ancestor(self, target: str) -> str:
         current = os.path.dirname(target)
@@ -482,12 +665,13 @@ class SafeExecutor:
             f".{os.path.basename(target)}.sysvar-tmp-{item.action_key[:12]}",
         )
 
-    def _remove_own_temps(self, item: OperationItem, path: str | None) -> int:
+    def _remove_own_temps(self, item: OperationItem, path: str | None, root: ConfinedRoot) -> int:
+        """Remove somente o temporário que o próprio executor cria para esta ação."""
         if not path:
             return 0
         temp = self._temp_name(item, path)
         if os.path.lexists(temp):
-            self._area.resolve(temp)
+            root.resolve(temp)
             os.unlink(temp)
             return 1
         return 0
@@ -499,6 +683,16 @@ class SafeExecutor:
                 os.unlink(temp)
             except OSError:
                 logger.exception("Não foi possível remover o temporário do executor")
+
+    @staticmethod
+    def _same_physical(first: str | None, second: str | None) -> bool:
+        if not first or not second:
+            return False
+        try:
+            a, b = os.lstat(first), os.lstat(second)
+        except OSError:
+            return False
+        return (a.st_dev, a.st_ino) == (b.st_dev, b.st_ino) and stat.S_ISREG(a.st_mode)
 
     @staticmethod
     def _matches(path: str | None, digest: str | None) -> bool:

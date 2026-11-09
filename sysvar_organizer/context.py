@@ -9,6 +9,7 @@ from pathlib import Path
 from sysvar_organizer.config import paths
 from sysvar_organizer.core.errors import DatabaseError
 from sysvar_organizer.persistence.comparison_repository import ComparisonRepository
+from sysvar_organizer.persistence.consolidation_store import ConsolidationStore
 from sysvar_organizer.persistence.database import Database
 from sysvar_organizer.persistence.duplicate_repository import DuplicateRepository
 from sysvar_organizer.persistence.history_repository import HistoryRepository
@@ -41,6 +42,7 @@ class AppContext:
     history_log: HistoryRepository | None = None
     database_error_category: str | None = None
     startup_notes: tuple[str, ...] = ()
+    consolidations: ConsolidationStore | None = None
 
     @property
     def database_ok(self) -> bool:
@@ -107,6 +109,7 @@ def build_context(recover_interrupted: bool = True, read_only: bool = False) -> 
     visuals = VisualRepository(database)
     organizations = OrganizationRepository(database)
     operations = OperationsStore(database)
+    consolidations = ConsolidationStore(database)
 
     notes: list[str] = []
     if recover_interrupted and not read_only:
@@ -117,6 +120,7 @@ def build_context(recover_interrupted: bool = True, read_only: bool = False) -> 
             (visuals, "busca(s) de fotografias interrompida(s) registrada(s) como falha"),
             (organizations, "simulação(ões) de organização interrompida(s) registrada(s) como falha"),
             (operations, "ação(ões) de operação interrompida(s); reconciliação obrigatória"),
+            (consolidations, "arquivo(s) da consolidação interrompido(s); retomada disponível"),
         ):
             try:
                 count = repository.mark_interrupted()
@@ -148,4 +152,5 @@ def build_context(recover_interrupted: bool = True, read_only: bool = False) -> 
         operations=operations,
         history_log=HistoryRepository(database),
         startup_notes=tuple(notes),
+        consolidations=consolidations,
     )

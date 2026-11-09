@@ -2,8 +2,8 @@
 
 A prévia é SIMULAÇÃO: nenhum arquivo ou pasta é criado, copiado, movido,
 renomeado ou excluído, nem mesmo no destino informado. A seção "Revisão de
-operações" apenas registra planos e seleções; a execução sobre arquivos reais
-está bloqueada nesta etapa.
+operações" registra planos e seleções e, somente em planos de áreas de
+homologação autorizadas, valida, executa e reverte (copiar/mover).
 """
 
 from __future__ import annotations
@@ -120,6 +120,7 @@ class OrganizationPage(QWidget):
         layout.addWidget(self._build_preview())
         layout.addWidget(self._build_tree())
         self._review = OperationsReviewPanel(context)
+        self._review.running_changed.connect(self._update_controls)
         layout.addWidget(self._review)
         layout.addStretch(1)
 
@@ -384,9 +385,17 @@ class OrganizationPage(QWidget):
 
     def set_busy_check(self, check: Callable[[], bool]) -> None:
         self._busy_check = check
+        # Revisão de operações: nada físico enquanto outra tarefa (ou a própria
+        # simulação) estiver em andamento.
+        self._review.set_busy_check(lambda: check() or self._simulation_running())
+
+    def _simulation_running(self) -> bool:
+        return self._thread is not None
 
     def is_running(self) -> bool:
-        return self._thread is not None
+        """Simulação OU operação física (revisão de operações) em andamento."""
+        review = getattr(self, "_review", None)
+        return self._simulation_running() or (review is not None and review.is_running())
 
     def _start(self) -> None:
         database = self._context.database
@@ -483,7 +492,18 @@ class OrganizationPage(QWidget):
         self._time_tile.set_value(format_duration(self._elapsed.elapsed() / 1000))
 
     def request_shutdown(self) -> bool:
-        if not self.is_running():
+        if self._review.is_running():
+            answer = QMessageBox.question(
+                self,
+                APP_NAME,
+                "Uma operação com arquivos está em andamento. Deseja cancelá-la com segurança e "
+                "sair? O arquivo em gravação é descartado e nenhuma unidade fica separada.",
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                QMessageBox.StandardButton.No,
+            )
+            if answer != QMessageBox.StandardButton.Yes or not self._review.request_shutdown():
+                return False
+        if not self._simulation_running():
             return True
         answer = QMessageBox.question(
             self,
@@ -700,6 +720,6 @@ class OrganizationPage(QWidget):
             and self._selector.current_set() is not None
             and self._destination_ok
         )
-        self._cancel_button.setEnabled(running and not self._cancelling)
+        self._cancel_button.setEnabled(self._simulation_running() and not self._cancelling)
         if hasattr(self, "_review"):
-            self._review.set_locked(running)
+            self._review.set_locked(self._simulation_running())

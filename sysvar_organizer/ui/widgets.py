@@ -80,8 +80,13 @@ def label(text: str, object_name: str | None = None, *, wrap: bool = False) -> Q
 
 
 def badge(text: str, kind: str) -> QLabel:
-    """Selo de estado. ``kind``: ``ok``, ``error`` ou ``unavailable``."""
-    names = {"ok": "BadgeOk", "error": "BadgeError", "unavailable": "BadgeUnavailable"}
+    """Selo de estado. ``kind``: ``ok``, ``error``, ``unavailable`` ou ``info``."""
+    names = {
+        "ok": "BadgeOk",
+        "error": "BadgeError",
+        "unavailable": "BadgeUnavailable",
+        "info": "BadgeInfo",
+    }
     widget = label(text, names[kind])
     widget.setAlignment(Qt.AlignmentFlag.AlignCenter)
     return widget

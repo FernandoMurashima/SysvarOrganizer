@@ -19,6 +19,7 @@ from sysvar_organizer.engines.organization.rules import MODELS
 from sysvar_organizer.engines.organization.sensitive import KIND_LABELS as STRUCTURE_LABELS
 from sysvar_organizer.operations.models import (
     ACTION_LABELS,
+    CONTROLLED_OPERATIONS_MESSAGE,
     ENV_REAL,
     REAL_OPERATIONS_BLOCKED_MESSAGE,
     STATE_LABELS,
@@ -50,10 +51,12 @@ from sysvar_organizer.reports.values import (
 
 KIND_PLAN = "plan"
 KIND_ACTIVITIES = "activities"
+KIND_CONSOLIDATION = "consolidation"
 REPORT_LABELS = {
     **ACTIVITY_LABELS,
     KIND_PLAN: "Plano de operações",
     KIND_ACTIVITIES: "Histórico de atividades",
+    KIND_CONSOLIDATION: "Consolidação de unidades",
 }
 
 STATUS_LABELS = {
@@ -768,13 +771,49 @@ def organization_report(conn: sqlite3.Connection, simulation_id: int) -> Report:
 
 # Planos e operações ---------------------------------------------------------
 
-def environment_label(environment: str) -> str:
-    return "REAL — execução bloqueada" if environment == ENV_REAL else "TESTE (área isolada)"
+def environment_label(environment: str, area_id: int | None = None) -> str:
+    if environment != ENV_REAL:
+        return "TESTE (área isolada)"
+    if area_id is not None:
+        return "TESTE REAL CONTROLADO (área autorizada)"
+    return "REAL — execução bloqueada (operação real não autorizada)"
+
+
+RUN_KIND_LABELS = {"validate": "Validação no disco", "execute": "Execução", "revert": "Reversão"}
+RUN_STATUS_LABELS = {
+    "running": "Em andamento",
+    "completed": "Concluído",
+    "cancelled": "Cancelado",
+    "failed": "Falhou",
+    "interrupted": "Interrompido",
+}
+RUN_RESULT_LABELS = {
+    "validated": "Validada",
+    "completed": "Concluída",
+    "reverted": "Revertida",
+    "blocked": "Bloqueada",
+    "failed": "Falhou",
+    "skipped": "Ignorada",
+    "cancelled": "Cancelada",
+    "reconciled": "Reconciliada",
+    "rolled_back": "Desfeita (unidade)",
+}
+
+
+def _area_root(conn: sqlite3.Connection, area_id: int | None) -> str | None:
+    if area_id is None:
+        return None
+    row = conn.execute("SELECT root, status FROM operation_areas WHERE id = ?", (area_id,)).fetchone()
+    if row is None:
+        return None
+    return row[0] + (" (autorização revogada)" if row[1] == "revoked" else "")
 
 
 def plan_report(conn: sqlite3.Connection, plan_id: int) -> Report:
     row = _fetch(conn, "SELECT * FROM operation_plans WHERE id = ?", (plan_id,))
     environment = row["environment"]
+    area_id = row["area_id"] if "area_id" in row.keys() else None
+    destination_area_id = row["destination_area_id"] if "destination_area_id" in row.keys() else None
     counts = dict(
         conn.execute(
             "SELECT state, COUNT(*) FROM operation_items WHERE plan_id = ? GROUP BY state",
@@ -795,7 +834,13 @@ def plan_report(conn: sqlite3.Connection, plan_id: int) -> Report:
     summary = [
         SummaryItem("tipo", "Tipo de atividade", REPORT_LABELS[KIND_PLAN]),
         SummaryItem("plano", "Plano nº", row["id"], INT),
-        SummaryItem("ambiente", "Ambiente", environment_label(environment)),
+        SummaryItem("ambiente", "Ambiente", environment_label(environment, area_id)),
+        SummaryItem("area_origem", "Área autorizada (origem)", _area_root(conn, area_id)),
+        SummaryItem(
+            "area_destino",
+            "Área autorizada (destino)",
+            _area_root(conn, destination_area_id or area_id),
+        ),
         SummaryItem("operacao", "Tipo de ação do plano", ACTION_LABELS.get(row["operation"])),
         SummaryItem(
             "situacao", "Situação do plano", "Cancelado" if row["status"] == "cancelled" else "Aberto"
@@ -815,7 +860,13 @@ def plan_report(conn: sqlite3.Connection, plan_id: int) -> Report:
         SummaryItem("reversoes", "Tentativas de reversão", recoveries, INT),
     ]
     notices = []
-    if environment == ENV_REAL:
+    if environment == ENV_REAL and area_id is not None:
+        notices.append(CONTROLLED_OPERATIONS_MESSAGE)
+        notices.append(
+            "Somente ações com estado Concluída ou Revertida alteraram arquivos; as demais "
+            "não foram executadas."
+        )
+    elif environment == ENV_REAL:
         notices.append(REAL_OPERATIONS_BLOCKED_MESSAGE)
         notices.append(
             "Ações deste plano NÃO foram executadas: estados planejada/validada são apenas "
@@ -853,7 +904,7 @@ def plan_report(conn: sqlite3.Connection, plan_id: int) -> Report:
             ACTION_LABELS.get(r[1], r[1]),
             r[2],
             r[3],
-            display_state(r[4], environment),
+            display_state(r[4], environment, area_id),
             r[5],
             r[6],
             r[7],
@@ -930,15 +981,53 @@ def plan_report(conn: sqlite3.Connection, plan_id: int) -> Report:
         (plan_id,),
         lambda r: (r[0], r[1], r[2], r[3], _label(RECOVERY_LABELS, r[4]) or "Pendente", r[5]),
     )
+    runs = Dataset(
+        "lotes",
+        "Lotes de validação, execução e reversão",
+        (
+            Column("lote", "Lote nº", INT),
+            Column("tipo", "Tipo"),
+            Column("situacao", "Situação"),
+            Column("inicio", "Início", TIMESTAMP),
+            Column("termino", "Término", TIMESTAMP),
+            Column("solicitadas", "Ações solicitadas", INT),
+            Column("concluidas", "Concluídas", INT),
+            Column("bloqueadas", "Bloqueadas", INT),
+            Column("falhas", "Falhas", INT),
+            Column("ignoradas", "Ignoradas", INT),
+            Column("mensagem", "Mensagem"),
+        ),
+        "SELECT id, kind, status, started_at, finished_at, requested, succeeded, blocked, failed, "
+        "skipped, message FROM operation_runs WHERE plan_id = ? ORDER BY id",
+        (plan_id,),
+        lambda r: (r[0], _label(RUN_KIND_LABELS, r[1]), _label(RUN_STATUS_LABELS, r[2]), *r[3:]),
+    )
+    run_items = Dataset(
+        "resultados_lote",
+        "Resultado por arquivo nos lotes",
+        (
+            Column("lote", "Lote nº", INT),
+            Column("acao_id", "Ação nº", INT),
+            Column("arquivo", "Arquivo"),
+            Column("resultado", "Resultado"),
+            Column("mensagem", "Mensagem"),
+            Column("data", "Data", TIMESTAMP),
+        ),
+        "SELECT ri.run_id, ri.item_id, i.source_path, ri.result, ri.message, ri.recorded_at "
+        "FROM operation_run_items ri JOIN operation_runs r ON r.id = ri.run_id "
+        "JOIN operation_items i ON i.id = ri.item_id WHERE r.plan_id = ? ORDER BY ri.id",
+        (plan_id,),
+        lambda r: (r[0], r[1], r[2], _label(RUN_RESULT_LABELS, r[3]), r[4], r[5]),
+    )
     return Report(
         KIND_PLAN,
         REPORT_LABELS[KIND_PLAN],
         plan_id,
-        f"Plano de operações nº {plan_id} — {environment_label(environment)}",
+        f"Plano de operações nº {plan_id} — {environment_label(environment, area_id)}",
         f"Todos os registros do plano nº {plan_id}",
         tuple(summary),
         tuple(notices),
-        (actions, events, executions, reversions),
+        (actions, events, executions, reversions, runs, run_items),
     )
 
 
@@ -1043,7 +1132,161 @@ def activities_report(conn: sqlite3.Connection, filters: ActivityFilter) -> Repo
     )
 
 
+# Consolidação de unidades -----------------------------------------------------
+
+CONSOLIDATION_CLASS_LABELS = {
+    "transfer": "Exclusivo da origem (transferir)",
+    "in_destination": "Conteúdo já existente no destino",
+    "source_duplicate": "Cópia duplicada na própria origem",
+    "pending": "Pendência (não verificado)",
+}
+CONSOLIDATION_STATE_LABELS = {
+    "analyzing": "Em análise",
+    "planned": "Aguardando transferência",
+    "running": "Em transferência",
+    "transferred": "Transferido e conferido (origem removida)",
+    "covered": "Coberto no destino (mantido na origem)",
+    "kept": "Mantido na origem",
+    "blocked": "Bloqueado",
+    "failed": "Falhou",
+    "interrupted": "Interrompido — será reconciliado",
+    "pending": "Pendente",
+    "excluded": "Excluído da transferência pelo usuário (intocado na origem)",
+}
+JOB_STATUS_LABELS = {
+    "analyzing": "Prévia em andamento",
+    "planned": "Prévia concluída (nada transferido)",
+    "running": "Em execução",
+    "partial": "Parcial (há itens a transferir)",
+    "completed": "Concluída",
+    "cancelled": "Cancelada",
+    "failed": "Falhou",
+    "interrupted": "Interrompida (retomada disponível)",
+}
+
+
+def consolidation_report(conn: sqlite3.Connection, job_id: int) -> Report:
+    job = _fetch(conn, "SELECT * FROM consolidation_jobs WHERE id = ?", (job_id,))
+    counts = {
+        (r[0], r[1]): (int(r[2]), int(r[3]))
+        for r in conn.execute(
+            "SELECT classification, state, COUNT(*), COALESCE(SUM(size_bytes), 0) "
+            "FROM consolidation_items WHERE job_id = ? GROUP BY classification, state",
+            (job_id,),
+        )
+    }
+
+    def total(classification, states=None, index=0):
+        return sum(v[index] for (c, s), v in counts.items()
+                   if c == classification and (states is None or s in states))
+
+    dup_covered = conn.execute(
+        "SELECT COUNT(*) FROM consolidation_items d JOIN consolidation_items r ON r.id = d.representative_id "
+        "WHERE d.job_id = ? AND d.classification = 'source_duplicate' AND r.state IN ('transferred', 'covered')",
+        (job_id,),
+    ).fetchone()[0]
+    done = total("transfer", ("transferred", "covered"))
+    excluded = total("transfer", ("excluded",))
+    open_transfers = total("transfer") - done
+    dup_open = total("source_duplicate") - dup_covered
+    pending = total("pending")
+    proven = open_transfers == 0 and dup_open == 0 and pending == 0 and job["source_issues"] == 0
+    verdict = (
+        "Cobertura comprovada para todos os arquivos indexados da origem. Antes de qualquer "
+        "formatação, faça NOVA análise das duas unidades e uma nova prévia: ela deve indicar "
+        "zero exclusivos e zero pendências."
+        if proven
+        else "A origem NÃO pode ser formatada: existem arquivos sem cobertura comprovada no destino."
+    )
+    summary = [
+        SummaryItem("tipo", "Tipo de atividade", REPORT_LABELS[KIND_CONSOLIDATION]),
+        SummaryItem("id", "Identificador", job["id"], INT),
+        SummaryItem("situacao", "Situação", JOB_STATUS_LABELS.get(job["status"], job["status"])),
+        SummaryItem("origem", "Origem (unidade a esvaziar)", job["source_root"]),
+        SummaryItem("destino", "Destino principal (preservado)", job["dest_root"]),
+        SummaryItem("base", "Pasta base no destino", job["dest_base"]),
+        SummaryItem("criada", "Criada em", job["created_at"], TIMESTAMP),
+        SummaryItem("previa", "Prévia concluída em", job["analyzed_at"], TIMESTAMP),
+        SummaryItem("autorizada", "Unidades autorizadas em", job["authorized_at"], TIMESTAMP),
+        SummaryItem("arquivos", "Arquivos indexados da origem", job["files_total"], INT),
+        SummaryItem("exclusivos", "Exclusivos a transferir (prévia)", job["transfer_count"], INT),
+        SummaryItem("volume", "Volume a transferir (prévia)", job["transfer_bytes"], BYTES),
+        SummaryItem("transferidos", "Transferidos e conferidos", total("transfer", ("transferred",)), INT),
+        SummaryItem("volume_transferido", "Volume transferido", total("transfer", ("transferred",), 1), BYTES),
+        SummaryItem("cobertos", "Encontrados no destino durante a execução", total("transfer", ("covered",)), INT),
+        SummaryItem("no_destino", "Já existentes no destino (mantidos na origem)", total("in_destination"), INT),
+        SummaryItem("duplicados", "Duplicados internos da origem (mantidos)", total("source_duplicate"), INT),
+        SummaryItem("renomeados", "Conflitos de nome resolvidos", job["conflict_count"], INT),
+        SummaryItem("a_transferir", "Ainda a transferir", total("transfer", ("planned", "interrupted", "running")), INT),
+        SummaryItem("excluidos", "Excluídos da transferência pelo usuário (intocados na origem)", excluded, INT),
+        SummaryItem("volume_excluido", "Volume excluído pelo usuário", total("transfer", ("excluded",), 1), BYTES),
+        SummaryItem("bloqueados", "Bloqueados", total("transfer", ("blocked",)), INT),
+        SummaryItem("falhas", "Falhas", total("transfer", ("failed",)), INT),
+        SummaryItem("pendencias", "Pendências não verificadas", pending, INT),
+        SummaryItem("problemas_origem", "Itens da origem não verificados na análise", job["source_issues"], INT),
+        SummaryItem("problemas_destino", "Itens do destino não verificados na análise", job["dest_issues"], INT),
+        SummaryItem("destino_nao_conferido", "Arquivos do destino sem conferência (não contam como cobertura)",
+                    job["dest_unverified"], INT),
+        SummaryItem("hashes_lidos", "SHA-256 calculados", job["hashed_count"], INT),
+        SummaryItem("hashes_reaproveitados", "SHA-256 reaproveitados", job["reused_count"], INT),
+        SummaryItem("cobertura", "Cobertura comprovada da origem", proven, BOOL),
+        SummaryItem("parecer", "Parecer", verdict),
+    ]
+    notices = (
+        "O destino é preservado: nenhum arquivo existente nele foi alterado, renomeado ou excluído.",
+        "Cada transferência foi conferida por SHA-256 no destino antes de remover a origem.",
+        "Arquivos ignorados, inacessíveis ou não verificados não são considerados protegidos no destino.",
+        "Duplicados restantes na origem não são excluídos automaticamente.",
+        "Arquivos excluídos da transferência pelo usuário não foram copiados, movidos, renomeados "
+        "nem excluídos, e não contam como cobertos no destino.",
+    )
+    columns = (
+        Column("item", "Item nº", INT),
+        Column("origem", "Origem"),
+        Column("destino", "Destino / correspondente"),
+        Column("tamanho", "Tamanho (bytes)", BYTES),
+        Column("sha256", "SHA-256"),
+        Column("classe", "Classificação"),
+        Column("estado", "Estado"),
+        Column("motivo", "Motivo / observação"),
+    )
+
+    def dataset(key, title, where):
+        return Dataset(
+            key, title, columns,
+            "SELECT id, source_path, COALESCE(dest_path, match_path), size_bytes, sha256, classification, "
+            f"state, reason FROM consolidation_items WHERE job_id = ? AND ({where}) ORDER BY id",
+            (job_id,),
+            lambda r: (r[0], r[1], r[2], r[3], r[4], _label(CONSOLIDATION_CLASS_LABELS, r[5]),
+                       _label(CONSOLIDATION_STATE_LABELS, r[6]), r[7]),
+            f"SELECT COUNT(*) FROM consolidation_items WHERE job_id = ? AND ({where})",
+        )
+
+    return Report(
+        KIND_CONSOLIDATION,
+        REPORT_LABELS[KIND_CONSOLIDATION],
+        job_id,
+        f"Consolidação de unidades nº {job_id}: {job['source_root']} → {job['dest_root']}",
+        f"Todos os arquivos da origem na consolidação nº {job_id}",
+        tuple(summary),
+        notices,
+        (
+            dataset("transferidos", "Arquivos transferidos", "state IN ('transferred', 'covered') AND classification = 'transfer'"),
+            dataset("mantidos", "Duplicados mantidos na origem", "classification IN ('in_destination', 'source_duplicate')"),
+            dataset("pendentes", "Itens pendentes",
+                    "classification = 'pending' OR (classification = 'transfer' AND state NOT IN ('transferred', 'covered', 'excluded'))"),
+            dataset("previstos", "Previstos para transferência",
+                    "classification = 'transfer' AND state IN ('planned', 'running', 'interrupted', 'blocked', 'failed')"),
+            dataset("excluidos", "Excluídos da transferência pelo usuário",
+                    "classification = 'transfer' AND state = 'excluded'"),
+            dataset("renomeados", "Conflitos de nome resolvidos", "renamed = 1"),
+            dataset("todos", "Todos os arquivos da origem", "1 = 1"),
+        ),
+    )
+
+
 BUILDERS = {
+    KIND_CONSOLIDATION: consolidation_report,
     KIND_STORAGE: storage_report,
     KIND_DUPLICATES: duplicates_report,
     KIND_COMPARISON: comparison_report,

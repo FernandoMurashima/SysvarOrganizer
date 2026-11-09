@@ -617,6 +617,197 @@ MIGRATIONS: list[tuple[int, tuple[str, ...]]] = [
             "CREATE INDEX idx_operation_recoveries_item ON operation_recoveries (item_id)",
         ),
     ),
+    (
+        # v8 (Bloco 10): áreas de homologação autorizadas e execuções em lote.
+        # Somente tabelas e colunas NOVAS: planos e itens da v7 ficam intactos e,
+        # sem área vinculada, continuam não executáveis.
+        8,
+        (
+            """
+            CREATE TABLE operation_areas (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                root        TEXT NOT NULL,
+                volume_id   TEXT NOT NULL,
+                dir_index   TEXT NOT NULL,
+                status      TEXT NOT NULL CHECK (status IN ('active', 'revoked')),
+                created_at  TEXT NOT NULL,
+                revoked_at  TEXT
+            )
+            """,
+            "CREATE INDEX idx_operation_areas_status ON operation_areas (status)",
+            "ALTER TABLE operation_plans ADD COLUMN area_id INTEGER REFERENCES operation_areas (id)",
+            "ALTER TABLE operation_plans ADD COLUMN destination_area_id INTEGER "
+            "REFERENCES operation_areas (id)",
+            """
+            CREATE TABLE operation_runs (
+                id            INTEGER PRIMARY KEY AUTOINCREMENT,
+                plan_id       INTEGER NOT NULL REFERENCES operation_plans (id),
+                kind          TEXT NOT NULL CHECK (kind IN ('validate', 'execute', 'revert')),
+                status        TEXT NOT NULL CHECK (status IN ('running', 'completed', 'cancelled',
+                                                              'failed', 'interrupted')),
+                started_at    TEXT NOT NULL,
+                finished_at   TEXT,
+                requested     INTEGER NOT NULL DEFAULT 0,
+                succeeded     INTEGER NOT NULL DEFAULT 0,
+                blocked       INTEGER NOT NULL DEFAULT 0,
+                failed        INTEGER NOT NULL DEFAULT 0,
+                skipped       INTEGER NOT NULL DEFAULT 0,
+                confirmation  TEXT,
+                message       TEXT
+            )
+            """,
+            "CREATE INDEX idx_operation_runs_plan ON operation_runs (plan_id)",
+            """
+            CREATE TABLE operation_run_items (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                run_id      INTEGER NOT NULL REFERENCES operation_runs (id),
+                item_id     INTEGER NOT NULL REFERENCES operation_items (id),
+                result      TEXT NOT NULL CHECK (result IN ('validated', 'completed', 'reverted',
+                                                            'blocked', 'failed', 'skipped',
+                                                            'cancelled', 'reconciled',
+                                                            'rolled_back')),
+                message     TEXT,
+                recorded_at TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX idx_operation_run_items_run ON operation_run_items (run_id)",
+        ),
+    ),
+    (
+        # v9: Consolidação de unidades (origem -> destino principal). Somente
+        # tabelas novas; nenhum dado anterior é alterado.
+        9,
+        (
+            """
+            CREATE TABLE consolidation_jobs (
+                id                  INTEGER PRIMARY KEY AUTOINCREMENT,
+                source_analysis_id  INTEGER NOT NULL REFERENCES analysis_history (id),
+                source_root         TEXT NOT NULL,
+                dest_analysis_id    INTEGER NOT NULL REFERENCES analysis_history (id),
+                dest_root           TEXT NOT NULL,
+                dest_base           TEXT NOT NULL,
+                status              TEXT NOT NULL CHECK (status IN ('analyzing', 'planned', 'running',
+                                                    'partial', 'completed', 'cancelled', 'failed',
+                                                    'interrupted')),
+                created_at          TEXT NOT NULL,
+                updated_at          TEXT NOT NULL,
+                analyzed_at         TEXT,
+                source_volume       TEXT,
+                source_dir_index    TEXT,
+                dest_volume         TEXT,
+                dest_dir_index      TEXT,
+                authorized_at       TEXT,
+                files_total         INTEGER NOT NULL DEFAULT 0,
+                transfer_count      INTEGER NOT NULL DEFAULT 0,
+                transfer_bytes      INTEGER NOT NULL DEFAULT 0,
+                in_dest_count       INTEGER NOT NULL DEFAULT 0,
+                in_dest_bytes       INTEGER NOT NULL DEFAULT 0,
+                source_dup_count    INTEGER NOT NULL DEFAULT 0,
+                source_dup_bytes    INTEGER NOT NULL DEFAULT 0,
+                conflict_count      INTEGER NOT NULL DEFAULT 0,
+                pending_count       INTEGER NOT NULL DEFAULT 0,
+                source_issues       INTEGER NOT NULL DEFAULT 0,
+                dest_issues         INTEGER NOT NULL DEFAULT 0,
+                dest_unverified     INTEGER NOT NULL DEFAULT 0,
+                hashed_count        INTEGER NOT NULL DEFAULT 0,
+                reused_count        INTEGER NOT NULL DEFAULT 0,
+                bytes_read          INTEGER NOT NULL DEFAULT 0,
+                message             TEXT
+            )
+            """,
+            """
+            CREATE TABLE consolidation_items (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id            INTEGER NOT NULL REFERENCES consolidation_jobs (id),
+                file_id           INTEGER REFERENCES indexed_files (id),
+                source_path       TEXT NOT NULL,
+                rel_path          TEXT NOT NULL,
+                rel_key           TEXT NOT NULL,
+                size_bytes        INTEGER NOT NULL DEFAULT 0,
+                modified_at       INTEGER,
+                sha256            TEXT,
+                classification    TEXT CHECK (classification IN ('transfer', 'in_destination',
+                                                                 'source_duplicate', 'pending')),
+                match_path        TEXT,
+                representative_id INTEGER,
+                dest_path         TEXT,
+                renamed           INTEGER NOT NULL DEFAULT 0,
+                state             TEXT NOT NULL CHECK (state IN ('analyzing', 'planned', 'running',
+                                                  'transferred', 'covered', 'kept', 'blocked',
+                                                  'failed', 'interrupted', 'pending')),
+                reason            TEXT,
+                src_volume        TEXT,
+                src_index         TEXT,
+                src_mtime_ns      INTEGER,
+                dst_volume        TEXT,
+                dst_index         TEXT,
+                updated_at        TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX idx_consolidation_items_class "
+            "ON consolidation_items (job_id, classification, state)",
+            "CREATE INDEX idx_consolidation_items_size ON consolidation_items (job_id, size_bytes)",
+            "CREATE INDEX idx_consolidation_items_hash ON consolidation_items (job_id, sha256)",
+            """
+            CREATE TABLE consolidation_events (
+                id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id      INTEGER NOT NULL REFERENCES consolidation_jobs (id),
+                item_id     INTEGER REFERENCES consolidation_items (id),
+                occurred_at TEXT NOT NULL,
+                level       TEXT NOT NULL CHECK (level IN ('info', 'warning', 'error')),
+                code        TEXT NOT NULL,
+                message     TEXT NOT NULL
+            )
+            """,
+            "CREATE INDEX idx_consolidation_events_job ON consolidation_events (job_id)",
+        ),
+    ),
+    (
+        # v10: exclusão individual de arquivos da transferência (estado 'excluded').
+        # O SQLite não altera CHECK existente: a tabela de itens é recriada com os
+        # mesmos dados (procedimento recomendado; chaves estrangeiras desativadas
+        # na conexão de migração) e os índices são refeitos.
+        10,
+        (
+            """
+            CREATE TABLE consolidation_items_v10 (
+                id                INTEGER PRIMARY KEY AUTOINCREMENT,
+                job_id            INTEGER NOT NULL REFERENCES consolidation_jobs (id),
+                file_id           INTEGER REFERENCES indexed_files (id),
+                source_path       TEXT NOT NULL,
+                rel_path          TEXT NOT NULL,
+                rel_key           TEXT NOT NULL,
+                size_bytes        INTEGER NOT NULL DEFAULT 0,
+                modified_at       INTEGER,
+                sha256            TEXT,
+                classification    TEXT CHECK (classification IN ('transfer', 'in_destination',
+                                                                 'source_duplicate', 'pending')),
+                match_path        TEXT,
+                representative_id INTEGER,
+                dest_path         TEXT,
+                renamed           INTEGER NOT NULL DEFAULT 0,
+                state             TEXT NOT NULL CHECK (state IN ('analyzing', 'planned', 'running',
+                                                  'transferred', 'covered', 'kept', 'blocked',
+                                                  'failed', 'interrupted', 'pending', 'excluded')),
+                reason            TEXT,
+                src_volume        TEXT,
+                src_index         TEXT,
+                src_mtime_ns      INTEGER,
+                dst_volume        TEXT,
+                dst_index         TEXT,
+                updated_at        TEXT NOT NULL
+            )
+            """,
+            "INSERT INTO consolidation_items_v10 (id, job_id, file_id, source_path, rel_path, rel_key, size_bytes, modified_at, sha256, classification, match_path, representative_id, dest_path, renamed, state, reason, src_volume, src_index, src_mtime_ns, dst_volume, dst_index, updated_at) SELECT id, job_id, file_id, source_path, rel_path, rel_key, size_bytes, modified_at, sha256, classification, match_path, representative_id, dest_path, renamed, state, reason, src_volume, src_index, src_mtime_ns, dst_volume, dst_index, updated_at FROM consolidation_items",
+            "DROP TABLE consolidation_items",
+            "ALTER TABLE consolidation_items_v10 RENAME TO consolidation_items",
+            "CREATE INDEX idx_consolidation_items_class "
+            "ON consolidation_items (job_id, classification, state)",
+            "CREATE INDEX idx_consolidation_items_size ON consolidation_items (job_id, size_bytes)",
+            "CREATE INDEX idx_consolidation_items_hash ON consolidation_items (job_id, sha256)",
+            "CREATE INDEX idx_consolidation_items_rel ON consolidation_items (job_id, rel_key)",
+        ),
+    ),
 ]
 
 LATEST_SCHEMA_VERSION = MIGRATIONS[-1][0]

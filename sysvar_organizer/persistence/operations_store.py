@@ -33,6 +33,36 @@ class PlanRecord:
     created_at: str
     updated_at: str
     items_count: int
+    area_id: int | None = None
+    destination_area_id: int | None = None
+
+
+@dataclass(frozen=True)
+class AreaRecord:
+    id: int
+    root: str
+    volume_id: str
+    dir_index: str
+    status: str
+    created_at: str
+    revoked_at: str | None
+
+
+@dataclass(frozen=True)
+class RunRecord:
+    id: int
+    plan_id: int
+    kind: str
+    status: str
+    started_at: str
+    finished_at: str | None
+    requested: int
+    succeeded: int
+    blocked: int
+    failed: int
+    skipped: int
+    confirmation: str | None
+    message: str | None
 
 
 @dataclass(frozen=True)
@@ -84,6 +114,8 @@ class SourceRow:
 
 
 _PLAN_COLUMNS = ", ".join(f.name for f in fields(PlanRecord))
+_AREA_COLUMNS = ", ".join(f.name for f in fields(AreaRecord))
+_RUN_COLUMNS = ", ".join(f.name for f in fields(RunRecord))
 _ITEM_COLUMNS = ", ".join(f.name for f in fields(OperationItem))
 _ITEM_INSERT = [
     f.name for f in fields(OperationItem) if f.name not in ("id", "updated_at")
@@ -176,8 +208,14 @@ class OperationsStore:
         operation: str,
         destination: str,
         items: Sequence[dict],
+        area_id: int | None = None,
+        destination_area_id: int | None = None,
     ) -> int:
-        """Cria o plano e seus itens numa única transação."""
+        """Cria o plano e seus itens numa única transação.
+
+        As áreas autorizadas só podem ser vinculadas NA CRIAÇÃO: nenhum método
+        altera depois a área de um plano (planos antigos seguem sem área).
+        """
         now = utc_now()
         with self._db.connection() as conn:
             existing = conn.execute(
@@ -189,12 +227,13 @@ class OperationsStore:
                 """
                 INSERT INTO operation_plans (
                     plan_key, simulation_id, analysis_id, environment, test_root, operation,
-                    destination, status, created_at, updated_at, items_count
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?)
+                    destination, status, created_at, updated_at, items_count, area_id,
+                    destination_area_id
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, 'open', ?, ?, ?, ?, ?)
                 """,
                 (
                     plan_key, simulation_id, analysis_id, environment, test_root, operation,
-                    destination, now, now, len(items),
+                    destination, now, now, len(items), area_id, destination_area_id,
                 ),
             )
             plan_id = int(cursor.lastrowid)
@@ -431,7 +470,104 @@ class OperationsStore:
                 "message = 'Interrompida' WHERE finished_at IS NULL",
                 (now,),
             )
+            conn.execute(
+                "UPDATE operation_runs SET finished_at = ?, status = 'interrupted', "
+                "message = 'Aplicativo encerrado durante a execução' WHERE status = 'running'",
+                (now,),
+            )
             return len(rows)
+
+    # Áreas autorizadas -----------------------------------------------------
+
+    def create_area(self, root: str, volume_id: str, dir_index: str) -> int:
+        with self._db.connection() as conn:
+            cursor = conn.execute(
+                "INSERT INTO operation_areas (root, volume_id, dir_index, status, created_at) "
+                "VALUES (?, ?, ?, 'active', ?)",
+                (root, volume_id, dir_index, utc_now()),
+            )
+            return int(cursor.lastrowid)
+
+    def area(self, area_id: int) -> AreaRecord | None:
+        with self._db.connection() as conn:
+            row = conn.execute(
+                f"SELECT {_AREA_COLUMNS} FROM operation_areas WHERE id = ?", (area_id,)
+            ).fetchone()
+        return AreaRecord(**dict(row)) if row is not None else None
+
+    def areas(self, include_revoked: bool = False) -> list[AreaRecord]:
+        where = "" if include_revoked else "WHERE status = 'active'"
+        with self._db.connection() as conn:
+            rows = conn.execute(
+                f"SELECT {_AREA_COLUMNS} FROM operation_areas {where} ORDER BY id"
+            ).fetchall()
+        return [AreaRecord(**dict(r)) for r in rows]
+
+    def revoke_area(self, area_id: int) -> bool:
+        with self._db.connection() as conn:
+            cursor = conn.execute(
+                "UPDATE operation_areas SET status = 'revoked', revoked_at = ? "
+                "WHERE id = ? AND status = 'active'",
+                (utc_now(), area_id),
+            )
+            return bool(cursor.rowcount)
+
+    # Execuções em lote -----------------------------------------------------
+
+    def start_run(self, plan_id: int, kind: str, requested: int, confirmation: str | None) -> int:
+        with self._db.connection() as conn:
+            cursor = conn.execute(
+                "INSERT INTO operation_runs (plan_id, kind, status, started_at, requested, "
+                "confirmation) VALUES (?, ?, 'running', ?, ?, ?)",
+                (plan_id, kind, utc_now(), requested, confirmation),
+            )
+            return int(cursor.lastrowid)
+
+    def record_run_item(self, run_id: int, item_id: int, result: str, message: str | None) -> None:
+        with self._db.connection() as conn:
+            conn.execute(
+                "INSERT INTO operation_run_items (run_id, item_id, result, message, recorded_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (run_id, item_id, result, message, utc_now()),
+            )
+
+    def finish_run(self, run_id: int, status: str, counts: dict[str, int], message: str) -> None:
+        with self._db.connection() as conn:
+            conn.execute(
+                "UPDATE operation_runs SET status = ?, finished_at = ?, succeeded = ?, "
+                "blocked = ?, failed = ?, skipped = ?, message = ? WHERE id = ?",
+                (
+                    status, utc_now(), counts.get("succeeded", 0), counts.get("blocked", 0),
+                    counts.get("failed", 0), counts.get("skipped", 0), message, run_id,
+                ),
+            )
+
+    def runs(self, plan_id: int) -> list[RunRecord]:
+        with self._db.connection() as conn:
+            rows = conn.execute(
+                f"SELECT {_RUN_COLUMNS} FROM operation_runs WHERE plan_id = ? ORDER BY id DESC",
+                (plan_id,),
+            ).fetchall()
+        return [RunRecord(**dict(r)) for r in rows]
+
+    def run_items(self, run_id: int) -> list[tuple]:
+        with self._db.connection() as conn:
+            rows = conn.execute(
+                "SELECT item_id, result, message, recorded_at FROM operation_run_items "
+                "WHERE run_id = ? ORDER BY id",
+                (run_id,),
+            ).fetchall()
+        return [tuple(r) for r in rows]
+
+    def approved_items(self, plan_id: int, states: Sequence[str]) -> list[OperationItem]:
+        marks = ", ".join("?" for _ in states)
+        with self._db.connection() as conn:
+            rows = conn.execute(
+                f"SELECT {_ITEM_COLUMNS} FROM operation_items WHERE plan_id = ? AND approved = 1 "
+                f"AND state IN ({marks}) ORDER BY unit_key, id",
+                (plan_id, *states),
+            ).fetchall()
+        return [OperationItem(**dict(r)) for r in rows]
 
     # Registros -------------------------------------------------------------
 

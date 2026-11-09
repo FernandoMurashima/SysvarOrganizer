@@ -46,16 +46,39 @@ STATE_LABELS = {
 }
 
 REAL_OPERATIONS_BLOCKED_MESSAGE = (
-    "Operações reais estão bloqueadas nesta etapa. A execução física só existe na área "
-    "de testes isolada usada pelo conjunto de testes; a liberação para arquivos reais "
-    "depende de autorização específica do proprietário após nova homologação de segurança."
+    "Operação real não autorizada: este plano não está vinculado a uma área de homologação "
+    "autorizada. Ele pode ser revisado, mas nunca executado. Para executar, autorize uma "
+    "pasta de homologação e crie um novo plano a partir de uma prévia dessa pasta."
+)
+CONTROLLED_OPERATIONS_MESSAGE = (
+    "Teste real controlado: copiar, mover e reverter SOMENTE dentro das áreas autorizadas, "
+    "após seleção individual, validação no disco e confirmação final. Exclusão e envio à "
+    "Lixeira continuam bloqueados."
 )
 
+MODE_SIMULATION = "SIMULAÇÃO"
+MODE_CONTROLLED = "TESTE REAL CONTROLADO"
+MODE_UNAUTHORIZED = "OPERAÇÃO REAL NÃO AUTORIZADA"
+MODE_AUTOMATED_TEST = "TESTE AUTOMATIZADO (área isolada)"
 
-def display_state(state: str, environment: str) -> str:
+
+def plan_mode(environment: str, area_id: int | None) -> str:
+    """Modo de um plano: controlado (área autorizada), não autorizado ou teste."""
+    if environment == ENV_TEST:
+        return MODE_AUTOMATED_TEST
+    return MODE_CONTROLLED if area_id is not None else MODE_UNAUTHORIZED
+
+
+def display_state(state: str, environment: str, area_id: int | None = None) -> str:
     """Rótulo que distingue simulação, bloqueio, teste, conclusão, falha e reversão."""
-    if environment == ENV_REAL and state in (STATE_PLANNED, STATE_VALIDATED):
+    if environment == ENV_REAL and area_id is None and state in (STATE_PLANNED, STATE_VALIDATED):
         return "Simulação (execução real bloqueada)"
+    if environment == ENV_REAL and area_id is not None:
+        if state == STATE_PLANNED:
+            return "Planejada (aguarda validação)"
+        if state == STATE_VALIDATED:
+            return "Validada no disco"
+        return STATE_LABELS.get(state, state)
     if environment == ENV_TEST and state == STATE_VALIDATED:
         return "Autorizada em ambiente de teste"
     label = STATE_LABELS.get(state, state)

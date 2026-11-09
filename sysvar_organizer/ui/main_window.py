@@ -26,6 +26,7 @@ from sysvar_organizer.config import settings as keys
 from sysvar_organizer.context import AppContext
 from sysvar_organizer.core.errors import DatabaseError
 from sysvar_organizer.ui.pages.compare import ComparePage
+from sysvar_organizer.ui.pages.consolidation import ConsolidationPage
 from sysvar_organizer.ui.pages.dashboard import DashboardPage
 from sysvar_organizer.ui.pages.duplicates import DuplicatesPage
 from sysvar_organizer.ui.pages.history import HistoryPage
@@ -82,6 +83,12 @@ PAGES: tuple[PageSpec, ...] = (
         available=True,
     ),
     PageSpec(
+        "consolidation",
+        "Consolidação de unidades",
+        "Leva para a unidade principal somente o que existe apenas na outra unidade.",
+        available=True,
+    ),
+    PageSpec(
         "history",
         "Histórico",
         "Consulta às análises e operações realizadas.",
@@ -114,6 +121,7 @@ class MainWindow(QMainWindow):
         self._photos: PhotosPage | None = None
         self._organization: OrganizationPage | None = None
         self._history: HistoryPage | None = None
+        self._consolidation: ConsolidationPage | None = None
 
         self.setWindowTitle(APP_NAME)
         self.setMinimumSize(960, 600)
@@ -203,6 +211,9 @@ class MainWindow(QMainWindow):
         if spec.key == "history":
             self._history = HistoryPage(self._context)
             return self._history
+        if spec.key == "consolidation":
+            self._consolidation = ConsolidationPage(self._context)
+            return self._consolidation
         if spec.key == "settings":
             ctx = self._context
             return UnavailablePage(
@@ -241,6 +252,7 @@ class MainWindow(QMainWindow):
             organization,
             self._history,
             self._dashboard,
+            self._consolidation,
         )
         if any(task is None for task in tasks):
             return
@@ -255,6 +267,7 @@ class MainWindow(QMainWindow):
         storage.analysis_finished.connect(compare.reload_analyses)
         storage.analysis_finished.connect(photos.reload_analyses)
         storage.analysis_finished.connect(organization.reload_analyses)
+        storage.analysis_finished.connect(self._consolidation.reload_analyses)
         if self._dashboard is not None:
             duplicates.search_finished.connect(self._dashboard.refresh)
             compare.comparison_finished.connect(self._dashboard.refresh)
@@ -275,6 +288,9 @@ class MainWindow(QMainWindow):
             self._organization.reload_analyses()
         if self._history is not None and key == "history":
             self._history.refresh()
+        if self._consolidation is not None and key == "consolidation":
+            self._consolidation.reload_analyses()
+            self._consolidation.reload_jobs()
 
     def current_page_key(self) -> str:
         item = self._nav.currentItem()
@@ -313,6 +329,7 @@ class MainWindow(QMainWindow):
             self._organization,
             self._history,
             self._dashboard,
+            self._consolidation,
         ):
             if page is not None and not page.request_shutdown():
                 event.ignore()

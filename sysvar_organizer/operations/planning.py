@@ -14,6 +14,10 @@ Regras:
 * Resultados de duplicados (Bloco 03) e de semelhança visual (Bloco 05) viram
   apenas ALERTAS informativos, nunca ações.
 * Destinos repetidos dentro do plano bloqueiam todas as ações envolvidas.
+* Plano CONTROLADO (Bloco 10): criado com as áreas autorizadas da origem e do
+  destino; a prévia precisa estar inteira dentro delas e qualquer ação com
+  caminho fora delas nasce bloqueada. Sem áreas, o plano do ambiente real é
+  apenas para revisão (operação real não autorizada).
 """
 
 from __future__ import annotations
@@ -24,6 +28,7 @@ from collections import defaultdict
 
 from sysvar_organizer.engines.organization.models import ISSUE_LABELS
 from sysvar_organizer.operations.associations import find_units
+from sysvar_organizer.operations.authorization import AuthorizedArea
 from sysvar_organizer.operations.models import (
     ACTION_COPY,
     ACTION_KEEP,
@@ -57,16 +62,28 @@ def build_plan(
     environment: str = ENV_REAL,
     test_root: str | None = None,
     plan_key: str | None = None,
+    source_area: AuthorizedArea | None = None,
+    destination_area: AuthorizedArea | None = None,
 ) -> int:
     if operation not in (ACTION_MOVE, ACTION_COPY):
         raise PlanningError("Tipo de operação do plano deve ser mover ou copiar.")
     if environment == ENV_TEST and not test_root:
         raise PlanningError("Planos de teste exigem a raiz da área de testes.")
+    controlled = source_area is not None or destination_area is not None
+    if controlled and (environment != ENV_REAL or source_area is None or destination_area is None):
+        raise PlanningError("Plano controlado exige as áreas autorizadas da origem e do destino.")
     info = store.simulation_info(simulation_id)
     if info is None or info["status"] != "completed":
         raise PlanningError("A prévia de organização não existe ou não está concluída.")
 
     destination = info["destination"]
+    if controlled:
+        for area in {source_area, destination_area}:
+            area.verify()
+        if not source_area.contains(info["root"]):
+            raise PlanningError("A origem da prévia fica fora da área autorizada.")
+        if not destination_area.contains(destination):
+            raise PlanningError("O destino da prévia fica fora da área autorizada.")
     rows = store.simulation_rows(simulation_id)
     duplicates = store.duplicate_peers(info["analysis_id"])
     visuals = store.visual_peers(info["analysis_id"])
@@ -113,6 +130,8 @@ def build_plan(
 
     _apply_units(rows, items)
     _block_repeated_destinations(items)
+    if controlled:
+        _block_outside_areas(items, source_area, destination_area)
     _propagate_unit_blocks(items)
     key = plan_key or uuid.uuid4().hex
     return store.create_plan(
@@ -124,7 +143,21 @@ def build_plan(
         operation,
         destination,
         items,
+        area_id=source_area.id if controlled else None,
+        destination_area_id=destination_area.id if controlled else None,
     )
+
+
+def _block_outside_areas(
+    items: list[dict], source_area: AuthorizedArea, destination_area: AuthorizedArea
+) -> None:
+    for item in items:
+        inside = source_area.contains(item["source_path"]) and (
+            item["destination_path"] is None or destination_area.contains(item["destination_path"])
+        )
+        if not inside and item["state"] != STATE_BLOCKED:
+            item["state"] = STATE_BLOCKED
+            item["block_reason"] = "Caminho fora da área autorizada; a ação não pode ser executada."
 
 
 def _map_status(row, operation: str, destination: str):

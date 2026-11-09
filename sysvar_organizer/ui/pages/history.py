@@ -37,7 +37,7 @@ from sysvar_organizer.context import AppContext
 from sysvar_organizer.core.errors import DatabaseError
 from sysvar_organizer.operations.models import (
     ACTION_LABELS,
-    REAL_OPERATIONS_BLOCKED_MESSAGE,
+    CONTROLLED_OPERATIONS_MESSAGE,
     STATE_LABELS,
 )
 from sysvar_organizer.persistence.history_repository import (
@@ -317,9 +317,9 @@ class HistoryPage(QWidget):
         heading = QHBoxLayout()
         heading.addWidget(label("Planos e operações", "SectionTitle"))
         heading.addStretch(1)
-        heading.addWidget(badge("Operações reais bloqueadas", "error"))
+        heading.addWidget(badge("Operações reais só em áreas autorizadas", "unavailable"))
         box.addLayout(heading)
-        box.addWidget(label(REAL_OPERATIONS_BLOCKED_MESSAGE, "MetricHint", wrap=True))
+        box.addWidget(label(CONTROLLED_OPERATIONS_MESSAGE, "MetricHint", wrap=True))
         self._plans_table = result_table(
             ["Plano", "Criado em", "Ambiente", "Operação", "Situação", "Ações", "Estados"], (6,)
         )
@@ -472,7 +472,7 @@ class HistoryPage(QWidget):
             )
             self._plans_table.setItem(index, 0, _item(f"nº {plan.id}"))
             self._plans_table.setItem(index, 1, _item(format_timestamp(plan.created_at)))
-            self._plans_table.setItem(index, 2, _item(environment_label(plan.environment)))
+            self._plans_table.setItem(index, 2, _item(environment_label(plan.environment, plan.area_id)))
             self._plans_table.setItem(
                 index, 3, _item(ACTION_LABELS.get(plan.operation, plan.operation))
             )
@@ -486,7 +486,7 @@ class HistoryPage(QWidget):
         self._plan_combo.clear()
         for plan in self._plans:
             self._plan_combo.addItem(
-                f"Plano nº {plan.id}  ·  {environment_label(plan.environment)}  ·  "
+                f"Plano nº {plan.id}  ·  {environment_label(plan.environment, plan.area_id)}  ·  "
                 f"{format_timestamp(plan.created_at)}",
                 plan.id,
             )
