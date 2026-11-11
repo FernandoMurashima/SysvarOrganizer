@@ -12,11 +12,10 @@
 ## Papéis e documentação
 
 - **Proprietário:** aprova escopo, etapas, alterações de risco e homologações.
-- **ChatGPT (Jarvis):** único responsável pela escrita, revisão, manutenção e publicação da documentação do projeto no Cofre oficial `FernandoMurashima/sysvar-vault`.
-- **Claude Code:** implementa apenas código-fonte, testes necessários, arquivos técnicos de configuração e empacotamento do Organizer, conforme tarefa aprovada.
-- **Codex:** não participa do desenvolvimento deste produto. Quando usado em outros produtos, atua apenas sobre código, nunca sobre documentação.
-- O Claude Code **não deve criar ou editar documentos** Markdown (incluindo README, manuais, planos, decisões, guias ou notas do Cofre). Este `CLAUDE.md` também é mantido exclusivamente pelo responsável documental; qualquer proposta de alteração deve ser reportada, não aplicada.
-- Ao concluir trabalho técnico, informar arquivos de código alterados, validações realizadas, falhas e fatos que precisem ser documentados. Não editar o Cofre.
+- **Jarvis:** análise, planejamento, instruções, revisão e acompanhamento. É vedada a Jarvis qualquer alteração local ou remota.
+- **Claude Code e Codex:** executam somente o trabalho atribuído e autorizado. Escrita documental, inclusive neste arquivo e no Cofre, exige autorização expressa. Commits, pushes, migrations e deploys exigem autorização específica.
+- Ao concluir trabalho técnico, informar alterações, validações, falhas e necessidades de registro documental ao proprietário.
+- Consultar o GOV-01 em `C:\Projetos\Sysvar\Cofre\08 - Governança e Agentes` antes de planejar ou atuar.
 - O documento de referência é `09 - Sysvar Organizer/Plano de Gerenciamento do Projeto - Minuta 0.2.md` no Cofre `sysvar-vault`, aprovado em 01/11/2026.
 
 ## Diretrizes operacionais
@@ -26,5 +25,5 @@
 - Nunca excluir, mover ou sobrescrever arquivos do usuário automaticamente. Toda operação de risco requer aprovação explícita e, quando aplicável, mecanismos de reversão.
 - Testar inicialmente com conjuntos fictícios isolados, nunca com arquivos pessoais de produção.
 - Priorizar análise somente leitura, tratamento de erros, logs sem exposição de dados pessoais e verificações rápidas e proporcionais ao risco.
-- Não criar documentação técnica por iniciativa própria; comunicar necessidade ao ChatGPT para registro no Cofre.
-- Não fazer commit, push, instalar dependências globais nem executar ações em outros projetos sem autorização específica.
+- Encaminhar necessidades de documentação ao proprietário para decisão de escopo e executor.
+- Instalar dependências globais e atuar em outros projetos exige autorização específica.
